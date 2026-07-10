@@ -8,6 +8,7 @@ import (
 	. "github.com/xtls/xray-core/infra/conf"
 	"github.com/xtls/xray-core/transport/internet"
 	finalmaskcustom "github.com/xtls/xray-core/transport/internet/finalmask/header/custom"
+	xtlstls "github.com/xtls/xray-core/transport/internet/tls"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -241,6 +242,38 @@ func TestHeaderCustomUDPBuild(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestTLSConfigAllowInsecureCompatibility(t *testing.T) {
+	unsafeConfig, err := (&TLSConfig{
+		AllowInsecure: true,
+		Fingerprint:   "chrome",
+	}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tlsConfig, ok := unsafeConfig.(*xtlstls.Config)
+	if !ok {
+		t.Fatalf("unexpected config type %T", unsafeConfig)
+	}
+	if tlsConfig.Fingerprint != "unsafe:chrome" {
+		t.Fatalf("unexpected fingerprint %q", tlsConfig.Fingerprint)
+	}
+
+	plainUnsafeConfig, err := (&TLSConfig{
+		AllowInsecure: true,
+	}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainTLSConfig, ok := plainUnsafeConfig.(*xtlstls.Config)
+	if !ok {
+		t.Fatalf("unexpected config type %T", plainUnsafeConfig)
+	}
+	if plainTLSConfig.Fingerprint != "unsafe" {
+		t.Fatalf("unexpected fingerprint %q", plainTLSConfig.Fingerprint)
+	}
 }
 
 func TestHeaderCustomTCPBuildRejectsMixedItemKinds(t *testing.T) {

@@ -389,6 +389,9 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 		VerifyPeerCertificate:  randCarrier.verifyPeerCert,
 	}
 	randCarrier.Config = config
+	if c.Fingerprint == "unsafe" || strings.HasPrefix(c.Fingerprint, "unsafe:") {
+		config.InsecureSkipVerify = true
+	}
 	if len(c.VerifyPeerCertByName) > 0 {
 		config.InsecureSkipVerify = true
 	} else {
