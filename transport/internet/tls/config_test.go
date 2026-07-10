@@ -73,6 +73,22 @@ func TestInsecureCertificates(t *testing.T) {
 	}
 }
 
+func TestUnsafeFingerprintCompatibility(t *testing.T) {
+	c := &Config{
+		Fingerprint: "unsafe:chrome",
+	}
+
+	tlsConfig := c.GetTLSConfig()
+	if !tlsConfig.InsecureSkipVerify {
+		t.Fatal("expected InsecureSkipVerify for unsafe fingerprint compatibility")
+	}
+
+	fingerprint := GetFingerprint(c.Fingerprint)
+	if fingerprint == nil {
+		t.Fatal("expected resolved fingerprint for unsafe compatibility mode")
+	}
+}
+
 func BenchmarkCertificateIssuing(b *testing.B) {
 	ct, _ := cert.MustGenerate(nil, cert.Authority(true), cert.KeyUsage(x509.KeyUsageCertSign))
 	certificate := ParseCertificate(ct)

@@ -724,15 +724,20 @@ func (c *TLSConfig) Build() (proto.Message, error) {
 	config.MaxVersion = c.MaxVersion
 	config.CipherSuites = c.CipherSuites
 	config.Fingerprint = strings.ToLower(c.Fingerprint)
-	if config.Fingerprint != "unsafe" && tls.GetFingerprint(config.Fingerprint) == nil {
+	if c.AllowInsecure {
+		if config.Fingerprint == "" {
+			config.Fingerprint = "unsafe"
+		} else if !strings.HasPrefix(config.Fingerprint, "unsafe:") && config.Fingerprint != "unsafe" {
+			config.Fingerprint = "unsafe:" + config.Fingerprint
+		}
+	}
+	fingerprintName := strings.TrimPrefix(config.Fingerprint, "unsafe:")
+	if fingerprintName != "unsafe" && tls.GetFingerprint(fingerprintName) == nil {
 		return nil, errors.New(`unknown "fingerprint": `, config.Fingerprint)
 	}
 	config.RejectUnknownSni = c.RejectUnknownSNI
 	config.MasterKeyLog = c.MasterKeyLog
 
-	if c.AllowInsecure {
-		return nil, errors.PrintRemovedFeatureError(`"allowInsecure"`, `"pinnedPeerCertSha256"(pcs) and "verifyPeerCertByName"(vcn)`)
-	}
 	if c.PinnedPeerCertSha256 != "" {
 		for v := range strings.SplitSeq(c.PinnedPeerCertSha256, ",") {
 			v = strings.TrimSpace(v)

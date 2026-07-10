@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"math/big"
 	"slices"
+	"strings"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -185,6 +186,12 @@ func init() {
 }
 
 func GetFingerprint(name string) (fingerprint *utls.ClientHelloID) {
+	if strings.HasPrefix(name, "unsafe:") {
+		name = strings.TrimPrefix(name, "unsafe:")
+	}
+	if name == "unsafe" {
+		return &utls.HelloChrome_Auto
+	}
 	if name == "" {
 		return &utls.HelloChrome_Auto
 	}
