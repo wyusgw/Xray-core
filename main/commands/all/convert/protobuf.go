@@ -17,7 +17,7 @@ var cmdProtobuf = &base.Command{
 	UsageLine:   "{{.Exec}} convert pb [-outpbfile file] [-debug] [-type] [json file] [json file] ...",
 	Short:       "Convert multiple json configs to protobuf",
 	Long: `
-Convert multiple configs to ProtoBuf. JSON, YAML and TOML can be used.
+Convert multiple configs to ProtoBuf. JSON and TOML can be used.
 
 Arguments:
 

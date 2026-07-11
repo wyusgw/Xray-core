@@ -172,7 +172,6 @@
   - [XrayR-V2Board](https://github.com/missuo/XrayR-V2Board)
 - Cores
   - [Amnezia VPN](https://github.com/amnezia-vpn)
-  - [mihomo](https://github.com/MetaCubeX/mihomo)
   - [sing-box](https://github.com/SagerNet/sing-box)
 
 ## Contributing
