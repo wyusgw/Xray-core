@@ -188,16 +188,18 @@ func (s *serverSession) loopUniStreams() {
 }
 
 func (s *serverSession) handleUniStream(stream *quic.ReceiveStream) error {
-	defer stream.CancelRead(0)
 	buffer := make([]byte, 2)
 	if _, err := io.ReadFull(stream, buffer); err != nil {
+		stream.CancelRead(0)
 		return err
 	}
 	if buffer[0] != tuicVersion {
+		stream.CancelRead(0)
 		return errors.New("unknown version ", buffer[0])
 	}
 	switch buffer[1] {
 	case commandAuthenticate:
+		defer stream.CancelRead(0)
 		authPayload := make([]byte, authenticateLen-2)
 		if _, err := io.ReadFull(stream, authPayload); err != nil {
 			return err
@@ -224,6 +226,9 @@ func (s *serverSession) handleUniStream(stream *quic.ReceiveStream) error {
 		go s.resumePendingTasks()
 		return nil
 	case commandPacket, commandDissociate:
+		// The stream body stays unread until the command actually runs — the
+		// authentication stream may still be in flight, and cancelling the read
+		// here would drop the queued packet.
 		if s.authReady() {
 			return s.handlePendingUniStream(stream, buffer)
 		}
@@ -233,11 +238,13 @@ func (s *serverSession) handleUniStream(stream *quic.ReceiveStream) error {
 		})
 		return nil
 	default:
+		stream.CancelRead(0)
 		return errors.New("unknown command ", buffer[1])
 	}
 }
 
 func (s *serverSession) handlePendingUniStream(stream *quic.ReceiveStream, header []byte) error {
+	defer stream.CancelRead(0)
 	if err := s.waitAuth(); err != nil {
 		return err
 	}

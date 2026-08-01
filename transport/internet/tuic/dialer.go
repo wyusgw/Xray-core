@@ -32,7 +32,11 @@ func GetTLSConfigFromStreamSettings(streamSettings *internet.MemoryStreamConfig,
 }
 
 func dialTUIC(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
-	return nil, errors.New("TUIC dialer not implemented yet")
+	client := ClientFromContext(ctx)
+	if client == nil {
+		return nil, errors.New("the tuic transport can only be used by a TUIC outbound")
+	}
+	return client.Dial(ctx, dest, streamSettings)
 }
 
 func init() {
