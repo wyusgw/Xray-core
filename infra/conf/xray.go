@@ -53,6 +53,7 @@ var (
 		"wireguard":   func() interface{} { return &WireGuardConfig{IsClient: true} },
 		"tuic":        func() interface{} { return new(TuicClientConfig) },
 		"anytls":      func() interface{} { return new(AnyTLSClientConfig) },
+		"mieru":       func() interface{} { return new(MieruClientConfig) },
 	}, "protocol", "settings")
 )
 

@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package xray.proxy.mieru;
+option csharp_namespace = "Xray.Proxy.Mieru";
+option go_package = "github.com/xtls/xray-core/proxy/mieru";
+option java_package = "com.xray.proxy.mieru";
+option java_multiple_files = true;
+
+import "common/protocol/server_spec.proto";
+
+// Account contains the credentials mieru authenticates with. Unlike most
+// protocols here mieru keys on a user name as well as a password.
+message Account {
+  string username = 1;
+  string password = 2;
+}
+
+message ClientConfig {
+  // A single server endpoint. mieru's own client config takes a list, but a
+  // node in this app is always one server, and the node list is what gives the
+  // user a choice between them.
+  xray.common.protocol.ServerEndpoint server = 1;
+
+  // "TCP" or "UDP" — the transport mieru uses to reach the server, not the
+  // network of the proxied traffic. Defaults to TCP when empty.
+  string transport = 2;
+
+  // Inclusive port range, for servers that listen on many ports so a single
+  // blocked port does not take the node down. Mutually exclusive with
+  // server.port; exactly one of the two must be set.
+  uint32 port_range_start = 3;
+  uint32 port_range_end = 4;
+
+  // Connection multiplexing level: "MULTIPLEXING_OFF", "MULTIPLEXING_LOW",
+  // "MULTIPLEXING_MIDDLE" or "MULTIPLEXING_HIGH". Empty means mieru's default.
+  string multiplexing = 5;
+
+  // Maximum transmission unit for the UDP transport. Empty means mieru's
+  // default. Has no effect on the TCP transport.
+  int32 mtu = 6;
+
+  // "HANDSHAKE_STANDARD" waits for the server to reach the destination before
+  // sending payload (1-RTT); "HANDSHAKE_NO_WAIT" sends both at once (0-RTT).
+  // Empty means mieru's default, which behaves as HANDSHAKE_STANDARD.
+  string handshake_mode = 7;
+}
