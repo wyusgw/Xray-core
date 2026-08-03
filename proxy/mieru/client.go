@@ -161,11 +161,22 @@ func (h *Handler) mieruClient() (mieruclient.Client, error) {
 		Profile:      profile,
 		Dialer:       dialer,
 		PacketDialer: dialer,
-		Resolver:     xrayResolver{client: h.dnsClient},
-		// The dialer already resolves through Xray, so mieru must hand it the
-		// server name untouched rather than resolving separately and losing the
-		// routing and DNS rules the user configured.
-		DNSConfig: &apicommon.ClientDNSConfig{BypassDialerDNS: true},
+		// mieru resolves the server endpoint here, through Xray's DNS client, so
+		// the lookup follows the profile's DNS and routing rules and the dialer
+		// below receives a literal IP.
+		//
+		// Handing the bare name to the dialer instead (mieru's BypassDialerDNS)
+		// is only correct when the dialer resolves internally, and this one does
+		// not: internet.DialSystem passes a domain straight to Go's net.Dialer,
+		// which asks the *system* resolver. With the TUN up, that query is
+		// answered through the very tunnel this dial is trying to establish, so
+		// the first connections to a domain-addressed node stall until the
+		// resolver gives up and only succeed once the answer is cached.
+		//
+		// An address that is already an IP costs nothing extra: mieru returns it
+		// without a lookup. Only the stream transport was ever affected — the
+		// packet underlay has no bypass and has always resolved through here.
+		Resolver: xrayResolver{client: h.dnsClient},
 	}); err != nil {
 		return nil, errors.New("failed to store mieru client config").Base(err)
 	}
@@ -295,15 +306,29 @@ func (h *Handler) processUDP(ctx context.Context, link *transport.Link, conn net
 // Close releases the mieru client when the outbound handler is removed, for
 // example on a config reload. mieru clients cannot be restarted, so the field is
 // cleared and the next request builds a fresh one.
+//
+// Stopping the client is detached on purpose. mieru ends each live session with
+// a graceful close that polls for up to a second waiting for its close segment
+// to reach the wire — but the underlay sets the connection deadline to "now"
+// before it closes its sessions, so that segment can never be written and the
+// poll always runs its full 1000 iterations. Sessions are closed serially, as
+// are the outbound handlers above them, and the core holds its run lock for the
+// whole shutdown, so waiting here would add about a second per open connection
+// before the app can stop.
 func (h *Handler) Close() error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.client == nil {
+	client := h.client
+	h.client = nil
+	h.mu.Unlock()
+	if client == nil {
 		return nil
 	}
-	err := h.client.Stop()
-	h.client = nil
-	return err
+	go func() {
+		if err := client.Stop(); err != nil {
+			errors.LogInfoInner(context.Background(), err, "failed to stop mieru client")
+		}
+	}()
+	return nil
 }
 
 type udpPacketWriter struct {
