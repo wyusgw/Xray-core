@@ -183,11 +183,90 @@ func (x *ClientConfig) GetHandshakeMode() string {
 	return ""
 }
 
+type ServerConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Users allowed to connect. mieru derives each session key from the user name
+	// and password together, so both halves of the account matter. The list can be
+	// changed at runtime through the handler service without dropping the
+	// listener; see proxy/mieru/inbound.go.
+	Users []*protocol.User `protobuf:"bytes,1,rep,name=users,proto3" json:"users,omitempty"`
+	// "TCP" or "UDP" — the underlay mieru accepts connections on, not the network
+	// of the proxied traffic. Defaults to TCP when empty.
+	Transport string `protobuf:"bytes,2,opt,name=transport,proto3" json:"transport,omitempty"`
+	// Maximum transmission unit for the UDP underlay. Empty means mieru's
+	// default. Has no effect on the TCP underlay.
+	Mtu int32 `protobuf:"varint,3,opt,name=mtu,proto3" json:"mtu,omitempty"`
+	// Accepted for symmetry with ClientConfig. Multiplexing is chosen by the
+	// client and negotiated in-band — mieru's own server config has no such field
+	// — so this is validated and otherwise unused.
+	Multiplexing  string `protobuf:"bytes,4,opt,name=multiplexing,proto3" json:"multiplexing,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerConfig) Reset() {
+	*x = ServerConfig{}
+	mi := &file_proxy_mieru_config_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerConfig) ProtoMessage() {}
+
+func (x *ServerConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_proxy_mieru_config_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerConfig.ProtoReflect.Descriptor instead.
+func (*ServerConfig) Descriptor() ([]byte, []int) {
+	return file_proxy_mieru_config_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ServerConfig) GetUsers() []*protocol.User {
+	if x != nil {
+		return x.Users
+	}
+	return nil
+}
+
+func (x *ServerConfig) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
+}
+
+func (x *ServerConfig) GetMtu() int32 {
+	if x != nil {
+		return x.Mtu
+	}
+	return 0
+}
+
+func (x *ServerConfig) GetMultiplexing() string {
+	if x != nil {
+		return x.Multiplexing
+	}
+	return ""
+}
+
 var File_proxy_mieru_config_proto protoreflect.FileDescriptor
 
 const file_proxy_mieru_config_proto_rawDesc = "" +
 	"\n" +
-	"\x18proxy/mieru/config.proto\x12\x10xray.proxy.mieru\x1a!common/protocol/server_spec.proto\"A\n" +
+	"\x18proxy/mieru/config.proto\x12\x10xray.proxy.mieru\x1a\x1acommon/protocol/user.proto\x1a!common/protocol/server_spec.proto\"A\n" +
 	"\aAccount\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
 	"\bpassword\x18\x02 \x01(\tR\bpassword\"\x97\x02\n" +
@@ -198,7 +277,12 @@ const file_proxy_mieru_config_proto_rawDesc = "" +
 	"\x0eport_range_end\x18\x04 \x01(\rR\fportRangeEnd\x12\"\n" +
 	"\fmultiplexing\x18\x05 \x01(\tR\fmultiplexing\x12\x10\n" +
 	"\x03mtu\x18\x06 \x01(\x05R\x03mtu\x12%\n" +
-	"\x0ehandshake_mode\x18\a \x01(\tR\rhandshakeModeBR\n" +
+	"\x0ehandshake_mode\x18\a \x01(\tR\rhandshakeMode\"\x94\x01\n" +
+	"\fServerConfig\x120\n" +
+	"\x05users\x18\x01 \x03(\v2\x1a.xray.common.protocol.UserR\x05users\x12\x1c\n" +
+	"\ttransport\x18\x02 \x01(\tR\ttransport\x12\x10\n" +
+	"\x03mtu\x18\x03 \x01(\x05R\x03mtu\x12\"\n" +
+	"\fmultiplexing\x18\x04 \x01(\tR\fmultiplexingBR\n" +
 	"\x14com.xray.proxy.mieruP\x01Z%github.com/xtls/xray-core/proxy/mieru\xaa\x02\x10Xray.Proxy.Mierub\x06proto3"
 
 var (
@@ -213,19 +297,22 @@ func file_proxy_mieru_config_proto_rawDescGZIP() []byte {
 	return file_proxy_mieru_config_proto_rawDescData
 }
 
-var file_proxy_mieru_config_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_proxy_mieru_config_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_proxy_mieru_config_proto_goTypes = []any{
 	(*Account)(nil),                 // 0: xray.proxy.mieru.Account
 	(*ClientConfig)(nil),            // 1: xray.proxy.mieru.ClientConfig
-	(*protocol.ServerEndpoint)(nil), // 2: xray.common.protocol.ServerEndpoint
+	(*ServerConfig)(nil),            // 2: xray.proxy.mieru.ServerConfig
+	(*protocol.ServerEndpoint)(nil), // 3: xray.common.protocol.ServerEndpoint
+	(*protocol.User)(nil),           // 4: xray.common.protocol.User
 }
 var file_proxy_mieru_config_proto_depIdxs = []int32{
-	2, // 0: xray.proxy.mieru.ClientConfig.server:type_name -> xray.common.protocol.ServerEndpoint
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	3, // 0: xray.proxy.mieru.ClientConfig.server:type_name -> xray.common.protocol.ServerEndpoint
+	4, // 1: xray.proxy.mieru.ServerConfig.users:type_name -> xray.common.protocol.User
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_proxy_mieru_config_proto_init() }
@@ -239,7 +326,7 @@ func file_proxy_mieru_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proxy_mieru_config_proto_rawDesc), len(file_proxy_mieru_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

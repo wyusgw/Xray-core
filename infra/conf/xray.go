@@ -33,6 +33,7 @@ var (
 		"tuic":          func() interface{} { return new(TuicServerConfig) },
 		"anytls":        func() interface{} { return new(AnyTLSServerConfig) },
 		"hysteria":      func() interface{} { return new(HysteriaServerConfig) },
+		"mieru":         func() interface{} { return new(MieruServerConfig) },
 		"tun":           func() interface{} { return new(TunConfig) },
 	}, "protocol", "settings")
 

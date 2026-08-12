@@ -125,3 +125,71 @@ func TestMieruClientConfigRejectsInvalidSettings(t *testing.T) {
 		})
 	}
 }
+
+func buildMieruServerConfig(t *testing.T, raw string) (*mieru.ServerConfig, error) {
+	t.Helper()
+	config := new(MieruServerConfig)
+	if err := json.Unmarshal([]byte(raw), config); err != nil {
+		t.Fatalf("failed to parse mieru settings: %v", err)
+	}
+	message, err := config.Build()
+	if err != nil {
+		return nil, err
+	}
+	built, ok := message.(*mieru.ServerConfig)
+	if !ok {
+		t.Fatalf("unexpected message type %T", message)
+	}
+	return built, nil
+}
+
+func TestMieruServerConfig(t *testing.T) {
+	built, err := buildMieruServerConfig(t, `{
+		"transport": "udp",
+		"mtu": 1400,
+		"multiplexing": "MULTIPLEXING_LOW",
+		"clients": [{"username": "user", "password": "secret", "email": "user@test"}]
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built.GetTransport() != "UDP" {
+		t.Error(`expected transport to be normalised to "UDP", got: `, built.GetTransport())
+	}
+	if built.GetMtu() != 1400 {
+		t.Error("unexpected mtu: ", built.GetMtu())
+	}
+	if len(built.GetUsers()) != 1 {
+		t.Fatal("expected exactly one user, got: ", len(built.GetUsers()))
+	}
+	if email := built.GetUsers()[0].GetEmail(); email != "user@test" {
+		t.Error("unexpected email: ", email)
+	}
+}
+
+// A server that starts with no users is valid: a panel adds them at runtime.
+func TestMieruServerConfigWithoutUsers(t *testing.T) {
+	built, err := buildMieruServerConfig(t, `{"transport": "tcp"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(built.GetUsers()) != 0 {
+		t.Error("expected no users, got: ", len(built.GetUsers()))
+	}
+}
+
+func TestMieruServerConfigRejectsInvalidSettings(t *testing.T) {
+	for name, raw := range map[string]string{
+		"unsupported transport":    `{"transport": "quic"}`,
+		"unsupported multiplexing": `{"multiplexing": "MULTIPLEXING_EXTREME"}`,
+		"negative mtu":             `{"mtu": -1}`,
+		"user without a name":      `{"clients": [{"password": "secret"}]}`,
+		"user without a password":  `{"clients": [{"username": "user"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := buildMieruServerConfig(t, raw); err == nil {
+				t.Error("expected an error, got none")
+			}
+		})
+	}
+}

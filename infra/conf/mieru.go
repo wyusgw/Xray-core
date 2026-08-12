@@ -42,24 +42,14 @@ func (c *MieruClientConfig) Build() (proto.Message, error) {
 	// mieru speaks its own obfuscated transport rather than riding on Xray's,
 	// so this picks how the client reaches the server. It is unrelated to the
 	// network of the traffic being proxied.
-	transport := strings.ToUpper(strings.TrimSpace(c.Transport))
-	switch transport {
-	case "":
-		transport = "TCP"
-	case "TCP", "UDP":
-	default:
-		return nil, errors.New(`mieru: "transport" must be either "TCP" or "UDP", got: `, c.Transport)
+	transport, err := normalizeMieruTransport(c.Transport)
+	if err != nil {
+		return nil, err
 	}
 
-	// Normalised like transport, so a profile spelling it in lower case is
-	// accepted rather than rejected for a difference that carries no meaning.
-	multiplexing := strings.ToUpper(strings.TrimSpace(c.Multiplexing))
-	if multiplexing != "" {
-		switch multiplexing {
-		case "MULTIPLEXING_OFF", "MULTIPLEXING_LOW", "MULTIPLEXING_MIDDLE", "MULTIPLEXING_HIGH":
-		default:
-			return nil, errors.New("mieru: unsupported multiplexing level: ", c.Multiplexing)
-		}
+	multiplexing, err := normalizeMieruMultiplexing(c.Multiplexing)
+	if err != nil {
+		return nil, err
 	}
 
 	handshakeMode := strings.ToUpper(strings.TrimSpace(c.HandshakeMode))
@@ -109,6 +99,101 @@ func (c *MieruClientConfig) Build() (proto.Message, error) {
 	}
 
 	return cfg, nil
+}
+
+// MieruServerConfig is Inbound configuration.
+//
+// mieru binds its own sockets, so the listening port comes from the inbound
+// itself and the only thing settable here is how it listens. Users are usually
+// added at runtime through the handler service rather than listed up front,
+// which is why "clients" may be empty.
+type MieruServerConfig struct {
+	Users   []*MieruUserConfig `json:"users"`
+	Clients []*MieruUserConfig `json:"clients"`
+	// "TCP" or "UDP" — the underlay to accept on, not the network of the
+	// proxied traffic. Defaults to TCP when empty.
+	Transport string `json:"transport"`
+	// Applies to the UDP underlay only. Zero means mieru's default.
+	Mtu int32 `json:"mtu"`
+	// Accepted for symmetry with the outbound. Multiplexing is chosen by the
+	// client and negotiated in-band, so this is validated and otherwise unused.
+	Multiplexing string `json:"multiplexing"`
+}
+
+// MieruUserConfig is user configuration.
+type MieruUserConfig struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Level    byte   `json:"level"`
+	Email    string `json:"email"`
+}
+
+// Build implements Buildable.
+func (c *MieruServerConfig) Build() (proto.Message, error) {
+	if c.Clients != nil {
+		c.Users = c.Clients
+	}
+
+	transport, err := normalizeMieruTransport(c.Transport)
+	if err != nil {
+		return nil, err
+	}
+	multiplexing, err := normalizeMieruMultiplexing(c.Multiplexing)
+	if err != nil {
+		return nil, err
+	}
+	if c.Mtu < 0 {
+		return nil, errors.New("mieru: mtu must not be negative")
+	}
+
+	config := &mieru.ServerConfig{
+		Users:        make([]*protocol.User, len(c.Users)),
+		Transport:    transport,
+		Mtu:          c.Mtu,
+		Multiplexing: multiplexing,
+	}
+	for idx, rawUser := range c.Users {
+		if rawUser.Username == "" {
+			return nil, errors.New("mieru: username is required")
+		}
+		if rawUser.Password == "" {
+			return nil, errors.New("mieru: password is required")
+		}
+		config.Users[idx] = &protocol.User{
+			Level: uint32(rawUser.Level),
+			Email: rawUser.Email,
+			Account: serial.ToTypedMessage(&mieru.Account{
+				Username: rawUser.Username,
+				Password: rawUser.Password,
+			}),
+		}
+	}
+
+	return config, nil
+}
+
+// normalizeMieruTransport upper-cases the underlay name so a config spelling it
+// in lower case is accepted rather than rejected for a difference that carries
+// no meaning.
+func normalizeMieruTransport(value string) (string, error) {
+	switch transport := strings.ToUpper(strings.TrimSpace(value)); transport {
+	case "":
+		return "TCP", nil
+	case "TCP", "UDP":
+		return transport, nil
+	default:
+		return "", errors.New(`mieru: "transport" must be either "TCP" or "UDP", got: `, value)
+	}
+}
+
+func normalizeMieruMultiplexing(value string) (string, error) {
+	multiplexing := strings.ToUpper(strings.TrimSpace(value))
+	switch multiplexing {
+	case "", "MULTIPLEXING_OFF", "MULTIPLEXING_LOW", "MULTIPLEXING_MIDDLE", "MULTIPLEXING_HIGH":
+		return multiplexing, nil
+	default:
+		return "", errors.New("mieru: unsupported multiplexing level: ", value)
+	}
 }
 
 // parseMieruPortRange reads an inclusive "start-end" port range.
