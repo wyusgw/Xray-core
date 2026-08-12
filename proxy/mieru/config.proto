@@ -6,6 +6,7 @@ option go_package = "github.com/xtls/xray-core/proxy/mieru";
 option java_package = "com.xray.proxy.mieru";
 option java_multiple_files = true;
 
+import "common/protocol/user.proto";
 import "common/protocol/server_spec.proto";
 
 // Account contains the credentials mieru authenticates with. Unlike most
@@ -44,3 +45,25 @@ message ClientConfig {
   // Empty means mieru's default, which behaves as HANDSHAKE_STANDARD.
   string handshake_mode = 7;
 }
+
+message ServerConfig {
+  // Users allowed to connect. mieru derives each session key from the user name
+  // and password together, so both halves of the account matter. The list can be
+  // changed at runtime through the handler service without dropping the
+  // listener; see proxy/mieru/inbound.go.
+  repeated xray.common.protocol.User users = 1;
+
+  // "TCP" or "UDP" — the underlay mieru accepts connections on, not the network
+  // of the proxied traffic. Defaults to TCP when empty.
+  string transport = 2;
+
+  // Maximum transmission unit for the UDP underlay. Empty means mieru's
+  // default. Has no effect on the TCP underlay.
+  int32 mtu = 3;
+
+  // Accepted for symmetry with ClientConfig. Multiplexing is chosen by the
+  // client and negotiated in-band — mieru's own server config has no such field
+  // — so this is validated and otherwise unused.
+  string multiplexing = 4;
+}
+

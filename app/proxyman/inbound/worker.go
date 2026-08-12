@@ -19,9 +19,11 @@ import (
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/proxy"
 	hysteria_proxy "github.com/xtls/xray-core/proxy/hysteria"
+	mieru_proxy "github.com/xtls/xray-core/proxy/mieru"
 	tuic_proxy "github.com/xtls/xray-core/proxy/tuic"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/hysteria"
+	mierutransport "github.com/xtls/xray-core/transport/internet/mieru"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tcp"
 	tuictransport "github.com/xtls/xray-core/transport/internet/tuic"
@@ -143,6 +145,11 @@ func (w *tcpWorker) Start() error {
 	if v, ok := w.proxy.(*tuic_proxy.Inbound); ok {
 		ctx = tuictransport.ContextWithAuthenticator(ctx, v.TUICInboundAuthenticator())
 		ctx = tuictransport.ContextWithServerSettings(ctx, v.TUICInboundSettings())
+	}
+
+	if v, ok := w.proxy.(*mieru_proxy.Inbound); ok {
+		ctx = mierutransport.ContextWithUserManager(ctx, v.MieruInboundUserManager())
+		ctx = mierutransport.ContextWithServerSettings(ctx, v.MieruInboundSettings())
 	}
 
 	hub, err := internet.ListenTCP(ctx, w.address, w.port, w.stream, func(conn stat.Connection) {
