@@ -28,8 +28,6 @@ func NewConnClient(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 		header = &utp{}
 	case WECHAT:
 		header = &wechat{}
-	case WIREGUARD:
-		header = &wireguard{}
 	default:
 		return nil, errors.New("invalid id ", c.ID)
 	}

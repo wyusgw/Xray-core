@@ -277,11 +277,6 @@ func TestPacketConnReadWrite(t *testing.T) {
 			layers: 2,
 		},
 		{
-			name:   "wireguard",
-			mask:   &header.Config{ID: 5},
-			layers: 2,
-		},
-		{
 			name:   "salamander",
 			mask:   &salamander.Config{Password: "1234"},
 			layers: 2,

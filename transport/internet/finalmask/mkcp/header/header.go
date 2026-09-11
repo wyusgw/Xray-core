@@ -13,5 +13,4 @@ const (
 	SRTP
 	UTP
 	WECHAT
-	WIREGUARD
 )

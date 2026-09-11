@@ -615,8 +615,6 @@ func (c *MkcpLegacy) Build() (proto.Message, error) {
 		return &header.Config{ID: 3}, nil
 	case "wechat":
 		return &header.Config{ID: 4}, nil
-	case "wireguard":
-		return &header.Config{ID: 5}, nil
 	default:
 		return nil, errors.New("invalid header ", c.Header)
 	}
