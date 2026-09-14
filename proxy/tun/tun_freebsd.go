@@ -12,6 +12,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"golang.org/x/sys/unix"
+	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/xtls/xray-core/common/buf"
 )
