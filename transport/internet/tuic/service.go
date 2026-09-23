@@ -64,7 +64,13 @@ func newServerService(options serverOptions) (*serverService, error) {
 		ctx:       options.Context,
 		tlsConfig: options.TLSConfig,
 		quicConfig: &quic.Config{
-			DisablePathMTUDiscovery:        !(runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "android" || runtime.GOOS == "darwin"),
+			DisablePathMTUDiscovery: !(runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "android" || runtime.GOOS == "darwin"),
+			// Start with small receive windows: quic-go grows them (up to its
+			// default maximums) only while the application keeps up, so a
+			// speed-limited user can't buffer megabytes of upload ahead of the
+			// limiter, while unthrottled streams still ramp up within a few RTTs.
+			InitialStreamReceiveWindow:     128 << 10,
+			InitialConnectionReceiveWindow: 320 << 10,
 			EnableDatagrams:                true,
 			Allow0RTT:                      options.ZeroRTTHandshake,
 			MaxIncomingStreams:             1 << 60,

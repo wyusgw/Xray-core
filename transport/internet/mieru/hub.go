@@ -198,7 +198,11 @@ func (l *socketListener) Listen(ctx context.Context, network, address string) (g
 	if err != nil {
 		return nil, err
 	}
-	return internet.ListenSystem(l.contextOr(ctx), addr, l.settings)
+	listener, err := internet.ListenSystem(l.contextOr(ctx), addr, l.settings)
+	if err != nil {
+		return nil, err
+	}
+	return &ingressListener{Listener: listener}, nil
 }
 
 func (l *socketListener) ListenPacket(ctx context.Context, network, address string) (gonet.PacketConn, error) {
