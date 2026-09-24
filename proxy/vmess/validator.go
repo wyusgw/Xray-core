@@ -16,7 +16,8 @@ import (
 // TimedUserValidator is a user Validator based on time.
 type TimedUserValidator struct {
 	sync.RWMutex
-	users []*protocol.MemoryUser
+	users   []*protocol.MemoryUser
+	byEmail map[string]int // lower-cased email -> position in users
 
 	behaviorSeed  uint64
 	behaviorFused bool
@@ -28,6 +29,7 @@ type TimedUserValidator struct {
 func NewTimedUserValidator() *TimedUserValidator {
 	tuv := &TimedUserValidator{
 		users:             make([]*protocol.MemoryUser, 0, 16),
+		byEmail:           make(map[string]int),
 		aeadDecoderHolder: aead.NewAuthIDDecoderHolder(),
 	}
 	return tuv
@@ -37,11 +39,14 @@ func (v *TimedUserValidator) Add(u *protocol.MemoryUser) error {
 	v.Lock()
 	defer v.Unlock()
 
-	v.users = append(v.users, u)
-
 	account, ok := u.Account.(*MemoryAccount)
 	if !ok {
 		return errors.New("account type is incorrect")
+	}
+
+	v.users = append(v.users, u)
+	if u.Email != "" {
+		v.byEmail[strings.ToLower(u.Email)] = len(v.users) - 1
 	}
 	if !v.behaviorFused {
 		hashkdf := hmac.New(sha256.New, []byte("VMESSBSKDF"))
@@ -71,13 +76,19 @@ func (v *TimedUserValidator) GetCount() int64 {
 }
 
 func (v *TimedUserValidator) GetAEAD(userHash []byte) (*protocol.MemoryUser, bool, error) {
+	return v.GetAEADFrom(userHash, "")
+}
+
+// GetAEADFrom is GetAEAD for a connection from source, the client's IP or
+// "" if unknown.
+func (v *TimedUserValidator) GetAEADFrom(userHash []byte, source string) (*protocol.MemoryUser, bool, error) {
 	v.RLock()
 	defer v.RUnlock()
 
 	var userHashFL [16]byte
 	copy(userHashFL[:], userHash)
 
-	userd, err := v.aeadDecoderHolder.Match(userHashFL)
+	userd, err := v.aeadDecoderHolder.MatchFrom(userHashFL, source)
 	if err != nil {
 		return nil, false, err
 	}
@@ -89,24 +100,24 @@ func (v *TimedUserValidator) Remove(email string) bool {
 	defer v.Unlock()
 
 	email = strings.ToLower(email)
-	idx := -1
-	for i, u := range v.users {
-		if strings.EqualFold(u.Email, email) {
-			idx = i
-			var cmdkeyfl [16]byte
-			copy(cmdkeyfl[:], u.Account.(*MemoryAccount).ID.CmdKey())
-			v.aeadDecoderHolder.RemoveUser(cmdkeyfl)
-			break
-		}
-	}
-	if idx == -1 {
+	idx, ok := v.byEmail[email]
+	if !ok {
 		return false
 	}
-	ulen := len(v.users)
+	var cmdkeyfl [16]byte
+	copy(cmdkeyfl[:], v.users[idx].Account.(*MemoryAccount).ID.CmdKey())
+	v.aeadDecoderHolder.RemoveUser(cmdkeyfl)
+	delete(v.byEmail, email)
 
-	v.users[idx] = v.users[ulen-1]
-	v.users[ulen-1] = nil
-	v.users = v.users[:ulen-1]
+	last := len(v.users) - 1
+	if idx != last {
+		v.users[idx] = v.users[last]
+		if moved := v.users[idx].Email; moved != "" {
+			v.byEmail[strings.ToLower(moved)] = idx
+		}
+	}
+	v.users[last] = nil
+	v.users = v.users[:last]
 
 	return true
 }

@@ -238,6 +238,9 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 
 	reader := &buf.BufferedReader{Reader: buf.NewReader(connection)}
 	svrSession := encoding.NewServerSession(h.clients, h.sessionHistory)
+	if inbound := session.InboundFromContext(ctx); inbound != nil && inbound.Source.IsValid() {
+		svrSession.SetSource(inbound.Source.Address.String())
+	}
 	request, err := svrSession.DecodeRequestHeader(reader, isDrain)
 	if err != nil {
 		if errors.Cause(err) != io.EOF {

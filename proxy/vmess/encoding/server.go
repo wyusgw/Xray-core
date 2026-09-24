@@ -100,6 +100,7 @@ type ServerSession struct {
 	responseBodyIV  [16]byte
 	responseWriter  io.Writer
 	responseHeader  byte
+	source          string
 }
 
 // NewServerSession creates a new ServerSession, using the given UserValidator.
@@ -109,6 +110,12 @@ func NewServerSession(validator *vmess.TimedUserValidator, sessionHistory *Sessi
 		userValidator:  validator,
 		sessionHistory: sessionHistory,
 	}
+}
+
+// SetSource sets the client's IP address, used to try the users that
+// recently connected from it first.
+func (s *ServerSession) SetSource(source string) {
+	s.source = source
 }
 
 func parseSecurityType(b byte) protocol.SecurityType {
@@ -152,7 +159,7 @@ func (s *ServerSession) DecodeRequestHeader(reader io.Reader, isDrain bool) (*pr
 	var decryptor io.Reader
 	var vmessAccount *vmess.MemoryAccount
 
-	user, foundAEAD, errorAEAD := s.userValidator.GetAEAD(buffer.Bytes())
+	user, foundAEAD, errorAEAD := s.userValidator.GetAEADFrom(buffer.Bytes(), s.source)
 
 	var fixedSizeAuthID [16]byte
 	copy(fixedSizeAuthID[:], buffer.Bytes())
