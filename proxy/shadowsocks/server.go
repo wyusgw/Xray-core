@@ -148,12 +148,7 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 				// 已知会话用户，直接基于该用户解码，避免修改全局 validator
 				request, data, err = DecodeUDPPacketWithUser(inbound.User, payload)
 			} else {
-				// 优化：传递源地址作为缓存键
-				cacheKey := ""
-				if inbound.Source.IsValid() {
-					cacheKey = inbound.Source.String()
-				}
-				request, data, err = DecodeUDPPacketWithCache(s.validator, payload, cacheKey)
+				request, data, err = DecodeUDPPacketWithCache(s.validator, payload, sourceIPKey(inbound))
 				if err == nil {
 					inbound.User = request.User
 				}
@@ -209,9 +204,11 @@ func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dis
 
 	bufferedReader := buf.BufferedReader{Reader: buf.NewReader(conn)}
 
-	// 优化：传递源地址作为缓存键，提升热点用户查找性能
-	cacheKey := conn.RemoteAddr().String()
-	request, bodyReader, err := ReadTCPSessionWithCache(s.validator, &bufferedReader, cacheKey)
+	inbound := session.InboundFromContext(ctx)
+	if inbound == nil {
+		panic("no inbound metadata")
+	}
+	request, bodyReader, err := ReadTCPSessionWithCache(s.validator, &bufferedReader, sourceIPKey(inbound))
 	if err != nil {
 		log.Record(&log.AccessMessage{
 			From:   conn.RemoteAddr(),
@@ -223,10 +220,6 @@ func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dis
 	}
 	conn.SetReadDeadline(time.Time{})
 
-	inbound := session.InboundFromContext(ctx)
-	if inbound == nil {
-		panic("no inbound metadata")
-	}
 	inbound.User = request.User
 
 	dest := request.Destination()
@@ -303,4 +296,13 @@ func init() {
 	common.Must(common.RegisterConfig((*ServerConfig)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		return NewServer(ctx, config.(*ServerConfig))
 	}))
+}
+
+// sourceIPKey 返回用户缓存的键：客户端的IP，不含端口。同一客户端的每个
+// TCP 连接源端口都不同，带端口的键永远不会命中。
+func sourceIPKey(inbound *session.Inbound) string {
+	if inbound == nil || !inbound.Source.IsValid() {
+		return ""
+	}
+	return inbound.Source.Address.String()
 }
