@@ -59,7 +59,7 @@ func ReadTCPSession(validator *Validator, reader io.Reader) (*protocol.RequestHe
 }
 
 // ReadTCPSessionWithCache 带缓存支持的TCP会话读取
-// cacheKey: 缓存键（建议使用源地址），为空则跳过缓存
+// cacheKey: 缓存键（客户端IP，不含端口），为空则跳过缓存
 func ReadTCPSessionWithCache(validator *Validator, reader io.Reader, cacheKey string) (*protocol.RequestHeader, buf.Reader, error) {
 	behaviorSeed := validator.GetBehaviorSeed()
 	drainer, errDrain := drain.NewBehaviorSeedLimitedDrainer(int64(behaviorSeed), 16+38, 3266, 64)

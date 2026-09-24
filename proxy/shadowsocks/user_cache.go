@@ -1,6 +1,8 @@
 package shadowsocks
 
 import (
+	"cmp"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +31,13 @@ const (
 	//
 	// 推荐值：6（平衡最优）
 	relayDetectionThreshold = 6 // 超过6用户认为是中转，禁用第一级缓存和攻击防御
+
+	// successUserTTL 第二级缓存条目的存活时间：超过这么久没有成功握手的用户
+	// 会被移出第二级缓存，避免它随运行时间增长成全量用户列表。
+	successUserTTL = 30 * time.Minute
+
+	// recentRebuildInterval 第二级缓存按最近成功时间排序的快照多久重建一次。
+	recentRebuildInterval = time.Second
 ) // UserCache 两级用户缓存系统，专门优化IP变化场景
 // 设计思路：
 // 1. 第一级缓存：IP → 用户（处理固定IP场景，O(1)查找）
@@ -51,9 +60,16 @@ type UserCache struct {
 type successUserCache struct {
 	users sync.Map // key: email (string), value: *successUserEntry
 	cap   int      // 容量限制（0表示无上限）
+
+	// recent 是 users 按最近成功时间从新到旧排序的快照，最多每
+	// recentRebuildInterval 重建一次，查找时无锁遍历。
+	recent     atomic.Pointer[[]*successUserEntry]
+	builtAt    atomic.Int64
+	rebuilding atomic.Bool
 }
 
-// successUserEntry 成功用户条目
+// successUserEntry 成功用户条目。user 创建后不再修改（用户对象变化时整个
+// 条目被替换），只有 lastAccess 会被并发更新。
 type successUserEntry struct {
 	user       *protocol.MemoryUser
 	lastAccess int64 // 最后访问时间（原子操作）
@@ -62,7 +78,7 @@ type successUserEntry struct {
 // userCacheShard 单个缓存分片（支持同IP多用户）
 type userCacheShard struct {
 	mu    sync.RWMutex
-	cache map[string]*cacheEntry // key: "ip:port"
+	cache map[string]*cacheEntry // key: 客户端IP
 	list  *cacheList             // LRU双向链表
 	cap   int                    // 每个分片的容量
 }
@@ -93,9 +109,7 @@ type cacheList struct {
 // capacity: 总缓存容量，会均匀分配到32个分片
 func NewUserCache(capacity int) *UserCache {
 	if capacity <= 0 {
-		// 大规模场景优化：默认缓存2048个IP（32分片×64用户/分片）
-		// 可覆盖同时在线2K用户的IP，考虑到一些用户可能有多个连接
-		capacity = 2048
+		capacity = 16384
 	}
 
 	shardCap := capacity / 32
@@ -166,6 +180,7 @@ func (c *UserCache) Clear() {
 		c.successCache.users.Delete(key)
 		return true
 	})
+	c.successCache.recent.Store(nil)
 }
 
 // getShard 根据key计算分片索引（使用简单的字符串hash）
@@ -309,21 +324,16 @@ func (s *userCacheShard) removeByEmail(email string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 遍历缓存，找到匹配的用户
+	// 同一用户可能缓存在多个IP下，必须全部移除，否则已删除的用户仍能
+	// 通过残留条目通过验证
 	for key, entry := range s.cache {
-		// 检查用户列表中是否有匹配的用户
-		for i, user := range entry.users {
-			if user.Email == email {
-				// 移除用户
-				entry.users = append(entry.users[:i], entry.users[i+1:]...)
-
-				// 如果用户列表为空，移除整个条目
-				if len(entry.users) == 0 {
-					s.list.remove(entry.node)
-					delete(s.cache, key)
-				}
-				return
-			}
+		entry.users = slices.DeleteFunc(entry.users, func(u *protocol.MemoryUser) bool {
+			return u.Email == email
+		})
+		// 如果用户列表为空，移除整个条目（中转条目本来就没有用户，保留其标记）
+		if len(entry.users) == 0 && !entry.isRelay {
+			s.list.remove(entry.node)
+			delete(s.cache, key)
 		}
 	}
 }
@@ -426,6 +436,55 @@ func (c *UserCache) GetSuccessUserMap() *sync.Map {
 	return &c.successCache.users
 }
 
+// RecentUsers 返回第二级缓存中 successUserTTL 内成功过的用户，最近成功的
+// 在前。返回的是共享快照，调用者不能修改。刚成功的用户最多
+// recentRebuildInterval 后才出现在快照中，已移除的用户也可能短暂残留，
+// 调用者需自行确认用户仍然有效。
+func (c *UserCache) RecentUsers() []*successUserEntry {
+	sc := c.successCache
+	now := time.Now().UnixNano()
+	snap := sc.recent.Load()
+	if snap != nil && now-sc.builtAt.Load() < int64(recentRebuildInterval) {
+		return *snap
+	}
+	// 只让一个协程重建，其余的继续用旧快照
+	if !sc.rebuilding.CompareAndSwap(false, true) {
+		if snap != nil {
+			return *snap
+		}
+		return nil
+	}
+	defer sc.rebuilding.Store(false)
+
+	// 排序用读取时的时间戳，排序期间并发更新不影响比较的一致性
+	type stamped struct {
+		entry *successUserEntry
+		at    int64
+	}
+	var live []stamped
+	if snap != nil {
+		live = make([]stamped, 0, len(*snap))
+	}
+	sc.users.Range(func(key, value interface{}) bool {
+		entry := value.(*successUserEntry)
+		at := atomic.LoadInt64(&entry.lastAccess)
+		if now-at > int64(successUserTTL) {
+			sc.users.CompareAndDelete(key, entry)
+		} else {
+			live = append(live, stamped{entry, at})
+		}
+		return true
+	})
+	slices.SortFunc(live, func(a, b stamped) int { return cmp.Compare(b.at, a.at) })
+	list := make([]*successUserEntry, len(live))
+	for i := range live {
+		list[i] = live[i].entry
+	}
+	sc.recent.Store(&list)
+	sc.builtAt.Store(now)
+	return list
+}
+
 // PutWithSuccess 智能缓存策略：支持同IP多用户+中转检测
 func (c *UserCache) PutWithSuccess(key string, user *protocol.MemoryUser) {
 	// 智能第一级缓存：支持同IP多用户，自动中转检测
@@ -449,10 +508,15 @@ func (c *UserCache) addSuccessUser(user *protocol.MemoryUser) {
 		user:       user,
 		lastAccess: now,
 	}); loaded {
-		// 用户已存在，使用原子操作更新访问时间（完全无锁）
 		entry := value.(*successUserEntry)
-		atomic.StoreInt64(&entry.lastAccess, now)
-		entry.user = user // 更新用户信息（可能密码变了）
+		if entry.user == user {
+			// 用户已存在，使用原子操作更新访问时间（完全无锁）
+			atomic.StoreInt64(&entry.lastAccess, now)
+		} else {
+			// 用户对象变了（例如密码被修改），替换整个条目，不在原条目上
+			// 修改 user，避免与并发读取者产生数据竞争
+			c.successCache.users.Store(user.Email, &successUserEntry{user: user, lastAccess: now})
+		}
 	}
 	// 新用户已通过 LoadOrStore 自动添加，无需额外操作
 

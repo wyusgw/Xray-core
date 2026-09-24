@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"hash/crc64"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/protocol"
@@ -36,9 +38,10 @@ type Validator struct {
 	behaviorSeed  uint64
 	behaviorFused bool
 
-	isRelayNode     bool // 标记节点是否处于中转环境（检测到后保持）
-	defenseEnabled  bool // 攻击防御是否已启用（确认非中转后才启用）
-	detectionActive bool // 是否正在进行环境检测（检测完成后固定）
+	// 握手路径上不持锁读取，用原子类型
+	isRelayNode     atomic.Bool // 标记节点是否处于中转环境（检测到后保持）
+	defenseEnabled  atomic.Bool // 攻击防御是否已启用（确认非中转后才启用）
+	detectionActive atomic.Bool // 是否正在进行环境检测（检测完成后固定）
 }
 
 var ErrNotFound = errors.New("Not Found")
@@ -64,10 +67,10 @@ func (v *Validator) initializeIfNeeded() {
 	}
 
 	// 初始状态：检测未完成，攻击防御未启用
-	if !v.detectionActive {
-		v.detectionActive = true
-		v.defenseEnabled = false
-		v.isRelayNode = false
+	if !v.detectionActive.Load() {
+		v.detectionActive.Store(true)
+		v.defenseEnabled.Store(false)
+		v.isRelayNode.Store(false)
 	}
 }
 
@@ -265,9 +268,9 @@ func (v *Validator) GetStats() ValidatorStats {
 		TotalUsers:      len(v.users),
 		IndexedUsers:    0,
 		CacheSize:       0,
-		IsRelayNode:     v.isRelayNode,
-		DefenseEnabled:  v.defenseEnabled,
-		DetectionActive: v.detectionActive,
+		IsRelayNode:     v.isRelayNode.Load(),
+		DefenseEnabled:  v.defenseEnabled.Load(),
+		DetectionActive: v.detectionActive.Load(),
 	}
 
 	if v.emailIndex != nil {
@@ -302,7 +305,7 @@ type ValidatorStats struct {
 // 2. 如果提供了cacheKey，会先从用户缓存中查找（O(1)），大幅提升热点用户性能
 // 3. 未命中缓存时，遍历所有用户尝试解密，找到后更新缓存
 //
-// cacheKey: 可选的缓存键（通常是源地址 "ip:port"），为空则跳过缓存
+// cacheKey: 可选的缓存键（客户端IP，不含端口），为空则跳过缓存
 func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	return v.GetWithCache(bs, command, "")
 }
@@ -314,48 +317,28 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 // 2. 第二级：成功用户缓存遍历（较快，O(k)，k为活跃用户数）
 // 3. 第三级：全量用户扫描（最慢，O(n)，n为总用户数）
 //
-// cacheKey: 缓存键（建议使用源地址 "ip:port"），为空则跳过缓存
+// cacheKey: 缓存键（客户端IP，不含端口：同一客户端每个连接的端口都不同），为空则跳过缓存
 func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cacheKey string) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
-	// 优化：先尝试无锁缓存查找
-	// 对于同一用户的多个并发连接，大部分都应该能命中缓存
-	// 这样可以避免全局锁竞争，大幅提升并发性能
 	var defenseKey string
-	var successUsers []*protocol.MemoryUser
-	var useSecondCache bool
+	t := &trialDecrypter{bs: bs, command: command}
 
-	if cacheKey != "" {
-		// 尝试两级缓存查找（无需全局锁），同时获取是否为中转环境
-		var isRelay bool
-		if v.userCache != nil {
-			successUsers, useSecondCache, isRelay = v.userCache.GetWithFallback(cacheKey)
+	if cacheKey != "" && v.userCache != nil {
+		ipUsers, _, isRelay := v.userCache.GetWithFallback(cacheKey)
 
-			// 环境检测逻辑（只在检测期间有效）
-			if v.detectionActive {
-				if isRelay {
-					// 检测到中转环境特征（同IP超过阈值用户），立即确认
-					v.Lock()
-					if !v.isRelayNode {
-						v.isRelayNode = true
-						v.defenseEnabled = false
-						v.detectionActive = false // 检测完成
-					}
-					v.Unlock()
-				} else if len(successUsers) >= relayDetectionThreshold {
-					// 观察期结束：已有足够成功用户，且未检测到中转特征
-					// 确认为正常环境，启用攻击防御
-					v.Lock()
-					if !v.isRelayNode && !v.defenseEnabled {
-						v.defenseEnabled = true
-						v.detectionActive = false // 检测完成
-					}
-					v.Unlock()
-				}
-				// 否则：观察期继续，等待更多用户连接
-			}
+		// 环境检测：同一IP上超过阈值的用户说明节点在中转之后，记录下来。
+		// 攻击防御不再在这里自动启用：原来的启用条件（某个IP恰好有
+		// relayDetectionThreshold 个用户）先于中转判定（超过该数）成立，
+		// 中转节点会先被启用防御、再也不会被豁免，中转IP 可能被整体封禁。
+		// 缓存键曾经带端口，这两个条件从未成立过，防御实际上一直未启用，
+		// 这里保持这一行为。
+		if isRelay && v.detectionActive.Load() {
+			v.isRelayNode.Store(true)
+			v.defenseEnabled.Store(false)
+			v.detectionActive.Store(false) // 检测完成
 		}
 
 		// 只有在已确认非中转节点且防御已启用时，才进行攻击防御
-		if v.defenseEnabled && v.attackDefense != nil {
+		if v.defenseEnabled.Load() && v.attackDefense != nil {
 			isTCP := (command == protocol.RequestCommandTCP)
 			defenseKey = v.attackDefense.CheckAndRecordConnection(cacheKey, isTCP)
 
@@ -365,115 +348,21 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 			}
 		}
 
-		// 两级缓存：验证用户列表（无需全局锁）
-		if useSecondCache {
-			// 直接遍历 sync.Map，零拷贝，完全无锁
-			secondCacheMap := v.userCache.GetSuccessUserMap()
-			var found bool
-			secondCacheMap.Range(func(key, value interface{}) bool {
-				entry := value.(*successUserEntry)
-				successUser := entry.user
-				if account := successUser.Account.(*MemoryAccount); account.Cipher.IsAEAD() {
-					if len(bs) >= 32 {
-						aeadCipher := account.Cipher.(*AEADCipher)
-						ivLen = aeadCipher.IVSize()
-						iv := bs[:ivLen]
-
-						// 优化：使用内存池获取subkey缓冲区
-						subkey := getSubkey(aeadCipher.KeyBytes)
-						hkdfSHA1(account.Key, iv, subkey)
-						aead = aeadCipher.AEADAuthCreator(subkey)
-
-						var matchErr error
-						switch command {
-						case protocol.RequestCommandTCP:
-							// 优化：使用内存池获取TCP数据缓冲区
-							data := getTCPData(4 + aead.NonceSize())
-							ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
-							// TCP数据在返回后仍需使用，暂不归还到池
-						case protocol.RequestCommandUDP:
-							// 优化：使用内存池获取UDP数据缓冲区
-							data := getUDPData()
-							ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
-							// UDP数据在返回后仍需使用，暂不归还到池
-						}
-
-						// 用完立即归还subkey到池
-						putSubkey(subkey)
-
-						if matchErr == nil {
-							// 第二级缓存命中且验证成功
-							u = successUser
-							found = true
-
-							// 更新第一级缓存
-							if cacheKey != "" && v.userCache != nil {
-								v.userCache.PutWithSuccess(cacheKey, successUser)
-							}
-
-							// 防御已启用时才记录成功
-							if v.defenseEnabled && defenseKey != "" && v.attackDefense != nil {
-								v.attackDefense.RecordSuccess(defenseKey)
-							}
-
-							return false // 停止遍历
-						}
-					}
-				}
-				return true // 继续遍历
-			})
-
-			if found {
-				return // 第二级缓存命中
+		// 第一级：这个IP之前成功过的用户；第二级：最近成功过的用户，
+		// 最近的在前。都未命中才全量扫描。
+		for _, user := range ipUsers {
+			if t.try(user) && v.confirm(cacheKey, user) {
+				v.recordDefenseSuccess(defenseKey)
+				return user, t.aead, t.ret, t.ivLen, nil
 			}
-		} else if len(successUsers) > 0 {
-			// 第一级缓存返回的用户列表
-			for _, successUser := range successUsers {
-				if account := successUser.Account.(*MemoryAccount); account.Cipher.IsAEAD() {
-					if len(bs) >= 32 {
-						aeadCipher := account.Cipher.(*AEADCipher)
-						ivLen = aeadCipher.IVSize()
-						iv := bs[:ivLen]
-
-						// 优化：使用内存池获取subkey缓冲区
-						subkey := getSubkey(aeadCipher.KeyBytes)
-						hkdfSHA1(account.Key, iv, subkey)
-						aead = aeadCipher.AEADAuthCreator(subkey)
-
-						var matchErr error
-						switch command {
-						case protocol.RequestCommandTCP:
-							// 优化：使用内存池获取TCP数据缓冲区
-							data := getTCPData(4 + aead.NonceSize())
-							ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
-							// TCP数据在返回后仍需使用，暂不归还到池
-						case protocol.RequestCommandUDP:
-							// 优化：使用内存池获取UDP数据缓冲区
-							data := getUDPData()
-							ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
-							// UDP数据在返回后仍需使用，暂不归还到池
-						}
-
-						// 用完立即归还subkey到池
-						putSubkey(subkey)
-
-						if matchErr == nil {
-							// 第一级IP缓存命中且验证成功
-							u = successUser
-
-							// 更新第一级缓存
-							if cacheKey != "" && v.userCache != nil {
-								v.userCache.PutWithSuccess(cacheKey, successUser)
-							}
-
-							// 防御已启用时才记录成功
-							if v.defenseEnabled && defenseKey != "" && v.attackDefense != nil {
-								v.attackDefense.RecordSuccess(defenseKey)
-							}
-							return
-						}
-					}
-				}
+		}
+		for _, entry := range v.userCache.RecentUsers() {
+			if slices.Contains(ipUsers, entry.user) {
+				continue // 第一级已经试过
+			}
+			if t.try(entry.user) && v.confirm(cacheKey, entry.user) {
+				v.recordDefenseSuccess(defenseKey)
+				return entry.user, t.aead, t.ret, t.ivLen, nil
 			}
 		}
 	}
@@ -488,7 +377,7 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 
 	// 只有在防御已启用时，才进行白名单检查和早期中断优化
 	isWhitelisted := false
-	if v.defenseEnabled && defenseKey != "" && v.attackDefense != nil {
+	if v.defenseEnabled.Load() && defenseKey != "" && v.attackDefense != nil {
 		// 白名单检查优化：
 		// - 如果IP在白名单中(曾经成功验证过)，跳过早停限制
 		// - 这样正常用户打开新连接时不会因为"缓存未命中"而受早停影响
@@ -528,53 +417,13 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 		}
 
 		if account := user.Account.(*MemoryAccount); account.Cipher.IsAEAD() {
-			// AEAD payload decoding requires the payload to be over 32 bytes
-			if len(bs) < 32 {
-				continue
-			}
-
-			aeadCipher := account.Cipher.(*AEADCipher)
-			ivLen = aeadCipher.IVSize()
-			iv := bs[:ivLen]
-
-			// 优化：使用内存池获取subkey缓冲区，避免频繁分配
-			subkey := getSubkey(aeadCipher.KeyBytes)
-			hkdfSHA1(account.Key, iv, subkey)
-			aead = aeadCipher.AEADAuthCreator(subkey)
-
-			var matchErr error
-			switch command {
-			case protocol.RequestCommandTCP:
-				// 优化：使用内存池获取TCP数据缓冲区
-				data := getTCPData(4 + aead.NonceSize())
-				ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
-				// TCP数据在返回后仍需使用，所以暂不归还到池
-
-			case protocol.RequestCommandUDP:
-				// 优化：使用内存池获取UDP数据缓冲区
-				data := getUDPData()
-				ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
-				// UDP数据在返回后仍需使用，所以暂不归还到池
-			}
-
-			// 用完立即归还subkey到池，供下次使用
-			putSubkey(subkey)
-
-			if matchErr == nil {
-				u = user
-
-				// 优化：找到用户后更新两级缓存（异步更新，不阻塞当前请求）
+			if t.try(user) {
+				// 找到用户后更新两级缓存（持有读锁，不会与 Del 交错）
 				if cacheKey != "" && v.userCache != nil {
-					// 同时更新IP缓存和成功用户缓存
 					v.userCache.PutWithSuccess(cacheKey, user)
 				}
-
-				// 防御已启用时才记录验证成功
-				if v.defenseEnabled && defenseKey != "" && v.attackDefense != nil {
-					v.attackDefense.RecordSuccess(defenseKey)
-				}
-
-				return
+				v.recordDefenseSuccess(defenseKey)
+				return user, t.aead, t.ret, t.ivLen, nil
 			}
 		} else {
 			u = user
@@ -587,7 +436,7 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 			}
 
 			// 防御已启用时才记录验证成功
-			if v.defenseEnabled && defenseKey != "" && v.attackDefense != nil {
+			if v.defenseEnabled.Load() && defenseKey != "" && v.attackDefense != nil {
 				v.attackDefense.RecordSuccess(defenseKey)
 			}
 			return
@@ -595,7 +444,7 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 	}
 
 	// 防御已启用时才记录失败
-	if v.defenseEnabled && defenseKey != "" && v.attackDefense != nil {
+	if v.defenseEnabled.Load() && defenseKey != "" && v.attackDefense != nil {
 		v.attackDefense.RecordFailure(defenseKey)
 	}
 
@@ -611,4 +460,95 @@ func (v *Validator) GetBehaviorSeed() uint64 {
 		v.behaviorSeed = rand.Uint64()
 	}
 	return v.behaviorSeed
+}
+
+// confirm 确认缓存命中的用户仍然有效，并在同一把读锁下更新缓存。Del 持有
+// 写锁时从索引和缓存中移除用户：这里要么整个发生在 Del 之前（写入的缓存
+// 条目随后被 Del 清除），要么在之后（用户已不在索引中而被拒绝），已删除
+// 的用户不会因为并发的握手重新进入缓存。
+func (v *Validator) confirm(cacheKey string, u *protocol.MemoryUser) bool {
+	v.RLock()
+	defer v.RUnlock()
+	if u.Email != "" && v.emailIndex[strings.ToLower(u.Email)] != u {
+		return false
+	}
+	v.userCache.PutWithSuccess(cacheKey, u)
+	return true
+}
+
+// recordDefenseSuccess 防御已启用时记录验证成功
+func (v *Validator) recordDefenseSuccess(defenseKey string) {
+	if v.defenseEnabled.Load() && defenseKey != "" && v.attackDefense != nil {
+		v.attackDefense.RecordSuccess(defenseKey)
+	}
+}
+
+// zeroNonce 是每个流的第一个块（TCP）或每个 UDP 包使用的全零 nonce，
+// 足够任何支持的 AEAD 使用
+var zeroNonce [24]byte
+
+// trialDecrypter 用一个包的头部逐个尝试候选用户：多用户 AEAD 协议里没有
+// 用户标识，只能逐个派生子密钥试解。它按盐长度复用子密钥派生的状态和
+// 输出缓冲区，每个候选用户只分配 AEAD 本身。
+type trialDecrypter struct {
+	bs      []byte
+	command protocol.RequestCommand
+	kdfs    []saltKDF
+	subkey  [32]byte
+	out     []byte
+
+	// 最近一次 try 成功时的结果
+	aead  cipher.AEAD
+	ret   []byte
+	ivLen int32
+}
+
+type saltKDF struct {
+	ivLen int32
+	kdf   *subkeyKDF
+}
+
+// try 报告 user 的密钥能否解开这个包的头部，成功时结果存放在 t.aead、
+// t.ret（解出的数据，UDP 为整个包的明文）和 t.ivLen 中。
+func (t *trialDecrypter) try(user *protocol.MemoryUser) bool {
+	account, ok := user.Account.(*MemoryAccount)
+	// AEAD payload decoding requires the payload to be over 32 bytes
+	if !ok || !account.Cipher.IsAEAD() || len(t.bs) < 32 {
+		return false
+	}
+	aeadCipher := account.Cipher.(*AEADCipher)
+	ivLen := aeadCipher.IVSize()
+	subkey := t.subkey[:aeadCipher.KeyBytes]
+	t.saltKDF(ivLen).derive(account.Key, subkey)
+	aead := aeadCipher.AEADAuthCreator(subkey)
+
+	var ciphertext []byte
+	switch t.command {
+	case protocol.RequestCommandTCP:
+		ciphertext = t.bs[ivLen : ivLen+18] // 2字节长度 + 16字节标签
+	case protocol.RequestCommandUDP:
+		ciphertext = t.bs[ivLen:]
+	default:
+		return false
+	}
+	if t.out == nil {
+		t.out = make([]byte, 0, len(ciphertext))
+	}
+	ret, err := aead.Open(t.out[:0], zeroNonce[:aead.NonceSize()], ciphertext, nil)
+	if err != nil {
+		return false
+	}
+	t.aead, t.ret, t.ivLen = aead, ret, ivLen
+	return true
+}
+
+func (t *trialDecrypter) saltKDF(ivLen int32) *subkeyKDF {
+	for _, k := range t.kdfs {
+		if k.ivLen == ivLen {
+			return k.kdf
+		}
+	}
+	k := newSubkeyKDF(t.bs[:ivLen])
+	t.kdfs = append(t.kdfs, saltKDF{ivLen, k})
+	return k
 }
