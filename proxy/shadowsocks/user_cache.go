@@ -196,6 +196,10 @@ func (c *UserCache) getShard(key string) *userCacheShard {
 func (s *userCacheShard) get(key string) *protocol.MemoryUser {
 	s.mu.RLock()
 	entry, ok := s.cache[key]
+	var lastAccess int64
+	if ok {
+		lastAccess = entry.lastAccess // 在锁内读取，putMultiUser 会在写锁下修改
+	}
 	s.mu.RUnlock()
 
 	if !ok {
@@ -211,7 +215,6 @@ func (s *userCacheShard) get(key string) *protocol.MemoryUser {
 	// - 连接稳定性：减少LRU操作导致的短暂阻塞
 	// - 整体性能：缓存命中延迟从35ns降至~25ns
 	now := time.Now().UnixNano()
-	lastAccess := entry.lastAccess
 
 	// 如果超过5秒未更新LRU，才执行更新
 	if now-lastAccess > 5e9 { // 5e9纳秒 = 5秒
@@ -244,11 +247,12 @@ func (s *userCacheShard) getMultiUser(key string) []*protocol.MemoryUser {
 
 	users := make([]*protocol.MemoryUser, len(entry.users))
 	copy(users, entry.users)
+	lastAccess := entry.lastAccess // 在锁内读取，putMultiUser 会在写锁下修改
 	s.mu.RUnlock()
 
 	// 延迟LRU更新（减少锁竞争）
 	now := time.Now().UnixNano()
-	if now-entry.lastAccess > 5e9 { // 5秒
+	if now-lastAccess > 5e9 { // 5秒
 		s.mu.Lock()
 		// 双重检查：其他goroutine可能已经更新过了
 		if now-entry.lastAccess > 5e9 {
