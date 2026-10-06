@@ -118,7 +118,12 @@ func (c *Client) dialLocked(ctx context.Context, dest xnet.Destination, streamSe
 	}
 
 	udpDest := xnet.UDPDestination(dest.Address, dest.Port)
-	rawConn, err := internet.DialSystem(ctx, udpDest, streamSettings.SocketSettings)
+	var rawConn stdnet.Conn
+	if streamSettings.FinalMask != nil {
+		rawConn, err = streamSettings.FinalMask.DialUDP(ctx, udpDest)
+	} else {
+		rawConn, err = internet.DialSystem(ctx, udpDest, streamSettings.SocketSettings)
+	}
 	if err != nil {
 		return errors.New("failed to dial to TUIC server").Base(err)
 	}
@@ -126,7 +131,7 @@ func (c *Client) dialLocked(ctx context.Context, dest xnet.Destination, streamSe
 	var pktConn stdnet.PacketConn
 	var serverAddr stdnet.Addr
 	switch typed := rawConn.(type) {
-	case *internet.PacketConnWrapper:
+	case *xnet.PacketConnWrapper:
 		pktConn = typed.PacketConn
 		serverAddr = rawConn.RemoteAddr()
 	case *cnc.Connection:
@@ -140,15 +145,6 @@ func (c *Client) dialLocked(ctx context.Context, dest xnet.Destination, streamSe
 	default:
 		_ = rawConn.Close()
 		return errors.New("TUIC requires a packet connection")
-	}
-
-	if streamSettings.UdpmaskManager != nil {
-		maskedConn, err := streamSettings.UdpmaskManager.WrapPacketConnClient(pktConn)
-		if err != nil {
-			_ = pktConn.Close()
-			return errors.New("mask err").Base(err)
-		}
-		pktConn = maskedConn
 	}
 
 	quicConfig := &quic.Config{

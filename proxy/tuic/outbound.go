@@ -99,7 +99,7 @@ func (o *Outbound) Process(ctx context.Context, link *transport.Link, dialer int
 	dialCtx = tuictransport.ContextWithUDP(dialCtx, target.Network == net.Network_UDP)
 	conn, err := dialer.Dial(dialCtx, o.server.Destination)
 	if err != nil {
-		return errors.New("failed to find an available destination").AtWarning().Base(err)
+		return errors.New("failed to find an available destination").Base(err)
 	}
 	defer conn.Close()
 	errors.LogInfo(ctx, "tunneling request to ", target, " via ", target.Network, ":", o.server.Destination.NetAddr())

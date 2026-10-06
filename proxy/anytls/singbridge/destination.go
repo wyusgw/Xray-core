@@ -2,21 +2,9 @@ package singbridge
 
 import (
 	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 )
-
-func ToNetwork(network string) net.Network {
-	switch N.NetworkName(network) {
-	case N.NetworkTCP:
-		return net.Network_TCP
-	case N.NetworkUDP:
-		return net.Network_UDP
-	default:
-		return net.Network_Unknown
-	}
-}
 
 func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination, error) {
 	// IsFqdn() implicitly checks if the domain name is valid

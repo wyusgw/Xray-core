@@ -238,7 +238,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 	conn, err := client.DialContext(ctx, destination)
 	if err != nil {
-		return errors.New("failed to connect through mieru").AtWarning().Base(err)
+		return errors.New("failed to connect through mieru").Base(err)
 	}
 	defer conn.Close()
 	errors.LogInfo(ctx, "tunneling request to ", target, " via mieru")
@@ -421,7 +421,7 @@ func (d *systemDialer) ListenPacket(ctx context.Context, network, laddr, raddr s
 		return nil, err
 	}
 	switch c := conn.(type) {
-	case *internet.PacketConnWrapper:
+	case *net.PacketConnWrapper:
 		return c.PacketConn, nil
 	case *cnc.Connection:
 		return &internet.FakePacketConn{Conn: c}, nil

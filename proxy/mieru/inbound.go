@@ -62,7 +62,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Inbound, error) {
 	for _, user := range config.GetUsers() {
 		memUser, err := user.ToMemoryUser()
 		if err != nil {
-			return nil, errors.New("failed to parse mieru user").Base(err).AtError()
+			return nil, errors.New("failed to parse mieru user").Base(err)
 		}
 		if err := inbound.addUser(memUser); err != nil {
 			return nil, err
