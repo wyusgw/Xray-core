@@ -1,4 +1,4 @@
-package hysteria
+package hysteria2
 
 import (
 	"context"

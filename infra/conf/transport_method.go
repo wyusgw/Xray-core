@@ -18,7 +18,7 @@ import (
 	"github.com/xtls/xray-core/transport/internet/headers/http"
 	"github.com/xtls/xray-core/transport/internet/headers/noop"
 	"github.com/xtls/xray-core/transport/internet/httpupgrade"
-	"github.com/xtls/xray-core/transport/internet/hysteria"
+	"github.com/xtls/xray-core/transport/internet/hysteria2"
 	"github.com/xtls/xray-core/transport/internet/kcp"
 	"github.com/xtls/xray-core/transport/internet/splithttp"
 	"github.com/xtls/xray-core/transport/internet/tcp"
@@ -750,14 +750,14 @@ type Masquerade struct {
 	StatusCode int32             `json:"statusCode"`
 }
 
-type HysteriaConfig struct {
+type Hysteria2Config struct {
 	Version        int32      `json:"version"`
 	Auth           string     `json:"auth"`
 	UdpIdleTimeout int64      `json:"udpIdleTimeout"`
 	Masquerade     Masquerade `json:"masquerade"`
 }
 
-func (c *HysteriaConfig) Build() (proto.Message, error) {
+func (c *Hysteria2Config) Build() (proto.Message, error) {
 	if c.Version != 2 {
 		return nil, errors.New("version != 2")
 	}
@@ -766,7 +766,7 @@ func (c *HysteriaConfig) Build() (proto.Message, error) {
 		return nil, errors.New("UdpIdleTimeout must be between 2 and 600")
 	}
 
-	config := &hysteria.Config{}
+	config := &hysteria2.Config{}
 	config.Auth = c.Auth
 	config.UdpIdleTimeout = c.UdpIdleTimeout
 	config.MasqType = c.Masquerade.Type

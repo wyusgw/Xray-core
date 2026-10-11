@@ -1,4 +1,4 @@
-package hysteria
+package hysteria2
 
 import (
 	"context"
@@ -14,10 +14,10 @@ import (
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/routing"
-	"github.com/xtls/xray-core/proxy/hysteria/account"
+	"github.com/xtls/xray-core/proxy/hysteria2/account"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet"
-	"github.com/xtls/xray-core/transport/internet/hysteria"
+	"github.com/xtls/xray-core/transport/internet/hysteria2"
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
 
@@ -32,7 +32,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	p := v.GetFeature(policy.ManagerType()).(policy.Manager)
 
 	streamSettings := session.StreamSettingsFromContext(ctx).(*internet.MemoryStreamConfig)
-	if _, ok := streamSettings.ProtocolSettings.(*hysteria.Config); !ok {
+	if _, ok := streamSettings.ProtocolSettings.(*hysteria2.Config); !ok {
 		return nil, errors.New("not hysteria transport")
 	}
 
@@ -85,7 +85,7 @@ func (s *Server) Network() []net.Network {
 
 func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	inbound := session.InboundFromContext(ctx)
-	inbound.Name = "hysteria"
+	inbound.Name = "hysteria2"
 	inbound.CanSpliceCopy = 3
 	inbound.User = &protocol.MemoryUser{}
 
@@ -99,7 +99,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 		}
 	}
 
-	if _, ok := iConn.(*hysteria.InterConn); ok {
+	if _, ok := iConn.(*hysteria2.InterConn); ok {
 		reader := &UDPReader{
 			reader: conn,
 			df:     &Defragger{},

@@ -3,73 +3,66 @@ package conf
 import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/protocol"
-	"github.com/xtls/xray-core/common/serial"
-	"github.com/xtls/xray-core/common/task"
 	"github.com/xtls/xray-core/proxy/hysteria"
-	"github.com/xtls/xray-core/proxy/hysteria/account"
 	"google.golang.org/protobuf/proto"
 )
 
+// HysteriaClientConfig is the first Hysteria generation, the `hysteria`
+// outbound; the second generation is `hysteria2`.
 type HysteriaClientConfig struct {
-	Version int32    `json:"version"`
 	Address *Address `json:"address"`
 	Port    uint16   `json:"port"`
+	Auth    string   `json:"auth"`
+	// Rates the client can send and receive, e.g. "20 mbps". Both are required.
+	Up   Bandwidth `json:"up"`
+	Down Bandwidth `json:"down"`
+	// "xplus" is the only obfuscation of this generation.
+	Obfs          string   `json:"obfs"`
+	ObfsPassword  string   `json:"obfsPassword"`
+	ServerName    string   `json:"serverName"`
+	AllowInsecure bool     `json:"allowInsecure"`
+	Alpn          []string `json:"alpn"`
 }
 
 func (c *HysteriaClientConfig) Build() (proto.Message, error) {
-	if c.Version != 2 {
-		return nil, errors.New("version != 2")
+	if c.Address == nil {
+		return nil, errors.New("hysteria: server address is required")
+	}
+	if c.Port == 0 {
+		return nil, errors.New("hysteria: server port is required")
+	}
+	up, err := c.Up.Bps()
+	if err != nil {
+		return nil, errors.New("hysteria: bad up speed").Base(err)
+	}
+	down, err := c.Down.Bps()
+	if err != nil {
+		return nil, errors.New("hysteria: bad down speed").Base(err)
+	}
+	if up == 0 || down == 0 {
+		return nil, errors.New("hysteria: up and down speed are required")
+	}
+	if c.Obfs != "" && c.Obfs != "xplus" {
+		return nil, errors.New("hysteria: unsupported obfs ", c.Obfs)
+	}
+	if c.Obfs == "xplus" && c.ObfsPassword == "" {
+		return nil, errors.New("hysteria: obfsPassword is required with xplus")
 	}
 
-	config := &hysteria.ClientConfig{}
-	config.Server = &protocol.ServerEndpoint{
-		Address: c.Address.Build(),
-		Port:    uint32(c.Port),
+	config := &hysteria.ClientConfig{
+		Server: &protocol.ServerEndpoint{
+			Address: c.Address.Build(),
+			Port:    uint32(c.Port),
+		},
+		Auth:          c.Auth,
+		UpBps:         up,
+		DownBps:       down,
+		ServerName:    c.ServerName,
+		AllowInsecure: c.AllowInsecure,
+		Alpn:          c.Alpn,
 	}
-
-	return config, nil
-}
-
-type HysteriaUserConfig struct {
-	Auth  string `json:"auth"`
-	Level uint32 `json:"level"`
-	Email string `json:"email"`
-}
-
-type HysteriaServerConfig struct {
-	Version int32                 `json:"version"`
-	Users   []*HysteriaUserConfig `json:"users"`
-	Clients []*HysteriaUserConfig `json:"clients"`
-}
-
-func (c *HysteriaServerConfig) Build() (proto.Message, error) {
-	if c.Version != 2 {
-		return nil, errors.New("version != 2")
+	if c.Obfs == "xplus" {
+		config.ObfsPassword = c.ObfsPassword
 	}
-
-	config := new(hysteria.ServerConfig)
-
-	if c.Clients != nil {
-		c.Users = c.Clients
-	}
-	if len(c.Users) > 0 {
-		config.Users = make([]*protocol.User, len(c.Users))
-		processUser := func(idx int) error {
-			user := c.Users[idx]
-			acc := &account.Account{
-				Auth: user.Auth,
-			}
-			config.Users[idx] = &protocol.User{
-				Email:   user.Email,
-				Level:   user.Level,
-				Account: serial.ToTypedMessage(acc),
-			}
-			return nil
-		}
-		if err := task.ParallelForN(len(c.Users), processUser); err != nil {
-			return nil, err
-		}
-	}
-
 	return config, nil
 }

@@ -31,14 +31,14 @@ import (
 	core "github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/proxy/dokodemo"
 	"github.com/xtls/xray-core/proxy/freedom"
-	hyproxy "github.com/xtls/xray-core/proxy/hysteria"
-	hyaccount "github.com/xtls/xray-core/proxy/hysteria/account"
+	hyproxy "github.com/xtls/xray-core/proxy/hysteria2"
+	hyaccount "github.com/xtls/xray-core/proxy/hysteria2/account"
 	"github.com/xtls/xray-core/proxy/vless"
 	vin "github.com/xtls/xray-core/proxy/vless/inbound"
 	vout "github.com/xtls/xray-core/proxy/vless/outbound"
 	testingtcp "github.com/xtls/xray-core/testing/servers/tcp"
 	"github.com/xtls/xray-core/transport/internet"
-	hytransport "github.com/xtls/xray-core/transport/internet/hysteria"
+	hytransport "github.com/xtls/xray-core/transport/internet/hysteria2"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	splithttp "github.com/xtls/xray-core/transport/internet/splithttp"
 	transtcp "github.com/xtls/xray-core/transport/internet/tcp"
@@ -367,10 +367,10 @@ func runHysteria2Case(t *testing.T, bin string, mode trafficMode, payloadSize in
 					PortList: &xnet.PortList{Range: []*xnet.PortRange{xnet.SinglePortRange(serverPort)}},
 					Listen:   xnet.NewIPOrDomain(xnet.LocalHostIP),
 					StreamSettings: &internet.StreamConfig{
-						ProtocolName: "hysteria",
+						ProtocolName: "hysteria2",
 						TransportSettings: []*internet.TransportConfig{
 							{
-								ProtocolName: "hysteria",
+								ProtocolName: "hysteria2",
 								Settings: serial.ToTypedMessage(&hytransport.Config{
 									Auth:           auth,
 									UdpIdleTimeout: 60,
@@ -430,10 +430,10 @@ func runHysteria2Case(t *testing.T, bin string, mode trafficMode, payloadSize in
 				}),
 				SenderSettings: serial.ToTypedMessage(&proxyman.SenderConfig{
 					StreamSettings: &internet.StreamConfig{
-						ProtocolName: "hysteria",
+						ProtocolName: "hysteria2",
 						TransportSettings: []*internet.TransportConfig{
 							{
-								ProtocolName: "hysteria",
+								ProtocolName: "hysteria2",
 								Settings: serial.ToTypedMessage(&hytransport.Config{
 									Auth:           auth,
 									UdpIdleTimeout: 60,

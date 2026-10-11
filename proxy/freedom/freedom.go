@@ -164,7 +164,7 @@ func getDefaultFinalRule(inbound *session.Inbound) *FinalRule {
 	switch inbound.Name {
 	case "vless-reverse":
 		return defaultBlockAllRule
-	case "vless", "vmess", "trojan", "hysteria":
+	case "vless", "vmess", "trojan", "hysteria2":
 		return defaultBlockPrivateRule
 	default:
 		if strings.HasPrefix(inbound.Name, "shadowsocks") {

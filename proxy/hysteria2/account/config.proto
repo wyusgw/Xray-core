@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package xray.proxy.hysteria2.account;
+option csharp_namespace = "Xray.Proxy.Hysteria2.Account";
+option go_package = "github.com/xtls/xray-core/proxy/hysteria2/account";
+option java_package = "com.xray.proxy.hysteria2.account";
+option java_multiple_files = true;
+
+message Account {
+  string auth = 1;
+}

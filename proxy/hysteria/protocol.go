@@ -1,323 +1,225 @@
 package hysteria
 
 import (
-	"bytes"
 	"encoding/binary"
-	"fmt"
 	"io"
-
-	"github.com/apernet/quic-go/quicvarint"
-	"github.com/xtls/xray-core/common/errors"
-	"github.com/xtls/xray-core/transport/internet/hysteria"
+	"net"
+	"strconv"
 )
+
+// The messages of the first generation, as its reference implementation lays
+// them out: big endian, a bool as one byte, a string as a two-byte length
+// followed by its bytes.
 
 const (
-	// Max length values are for preventing DoS attacks
+	protocolVersion = 3
 
-	MaxAddressLength = 2048
-	MaxMessageLength = 2048
-	MaxPaddingLength = 4096
+	closeCodeProtocol = 1
+	closeCodeAuth     = 2
 
-	maxVarInt1 = 63
-	maxVarInt2 = 16383
-	maxVarInt4 = 1073741823
-	maxVarInt8 = 4611686018427387903
+	maxMessageLength = 0xFFFF
 )
 
-// TCPRequest format:
-// Address length (QUIC varint)
-// Address (bytes)
-// Padding length (QUIC varint)
-// Padding (bytes)
-
-func ReadTCPRequest(r io.Reader) (string, error) {
-	bReader := quicvarint.NewReader(r)
-	addrLen, err := quicvarint.Read(bReader)
-	if err != nil {
-		return "", err
+// writeClientHello writes the protocol version and the client hello: the rates
+// the client can send and receive, in bytes per second, and the secret.
+func writeClientHello(w io.Writer, sendBPS, recvBPS uint64, auth []byte) error {
+	if len(auth) > maxMessageLength {
+		return newError("auth is too long")
 	}
-	if addrLen == 0 || addrLen > MaxAddressLength {
-		return "", errors.New("invalid address length")
-	}
-	addrBuf := make([]byte, addrLen)
-	_, err = io.ReadFull(r, addrBuf)
-	if err != nil {
-		return "", err
-	}
-	paddingLen, err := quicvarint.Read(bReader)
-	if err != nil {
-		return "", err
-	}
-	if paddingLen > MaxPaddingLength {
-		return "", errors.New("invalid padding length")
-	}
-	if paddingLen > 0 {
-		_, err = io.CopyN(io.Discard, r, int64(paddingLen))
-		if err != nil {
-			return "", err
-		}
-	}
-	return string(addrBuf), nil
-}
-
-func WriteTCPRequest(w io.Writer, addr string) error {
-	padding := hysteria.TcpRequestPadding.String()
-	paddingLen := len(padding)
-	addrLen := len(addr)
-	sz := int(quicvarint.Len(uint64(addrLen))) + addrLen +
-		int(quicvarint.Len(uint64(paddingLen))) + paddingLen
-	buf := make([]byte, sz)
-	i := varintPut(buf, uint64(addrLen))
-	i += copy(buf[i:], addr)
-	i += varintPut(buf[i:], uint64(paddingLen))
-	copy(buf[i:], padding)
-	_, err := w.Write(buf)
+	b := make([]byte, 0, 1+8+8+2+len(auth))
+	b = append(b, protocolVersion)
+	b = binary.BigEndian.AppendUint64(b, sendBPS)
+	b = binary.BigEndian.AppendUint64(b, recvBPS)
+	b = binary.BigEndian.AppendUint16(b, uint16(len(auth)))
+	b = append(b, auth...)
+	_, err := w.Write(b)
 	return err
 }
 
-// TCPResponse format:
-// Status (byte, 0=ok, 1=error)
-// Message length (QUIC varint)
-// Message (bytes)
-// Padding length (QUIC varint)
-// Padding (bytes)
-
-func ReadTCPResponse(r io.Reader) (bool, string, error) {
-	var status [1]byte
-	if _, err := io.ReadFull(r, status[:]); err != nil {
-		return false, "", err
+// readServerHello reads whether the client was accepted, the rate the server
+// can receive at, and the server's message.
+func readServerHello(r io.Reader) (ok bool, recvBPS uint64, message string, err error) {
+	var head [1 + 8 + 8 + 2]byte
+	if _, err = io.ReadFull(r, head[:]); err != nil {
+		return false, 0, "", err
 	}
-	bReader := quicvarint.NewReader(r)
-	msgLen, err := quicvarint.Read(bReader)
-	if err != nil {
-		return false, "", err
+	msg := make([]byte, binary.BigEndian.Uint16(head[17:19]))
+	if _, err = io.ReadFull(r, msg); err != nil {
+		return false, 0, "", err
 	}
-	if msgLen > MaxMessageLength {
-		return false, "", errors.New("invalid message length")
-	}
-	var msgBuf []byte
-	// No message is fine
-	if msgLen > 0 {
-		msgBuf = make([]byte, msgLen)
-		_, err = io.ReadFull(r, msgBuf)
-		if err != nil {
-			return false, "", err
-		}
-	}
-	paddingLen, err := quicvarint.Read(bReader)
-	if err != nil {
-		return false, "", err
-	}
-	if paddingLen > MaxPaddingLength {
-		return false, "", errors.New("invalid padding length")
-	}
-	if paddingLen > 0 {
-		_, err = io.CopyN(io.Discard, r, int64(paddingLen))
-		if err != nil {
-			return false, "", err
-		}
-	}
-	return status[0] == 0, string(msgBuf), nil
+	return head[0] != 0, binary.BigEndian.Uint64(head[9:17]), string(msg), nil
 }
 
-func WriteTCPResponse(w io.Writer, ok bool, msg string) error {
-	padding := hysteria.TcpResponsePadding.String()
-	paddingLen := len(padding)
-	msgLen := len(msg)
-	sz := 1 + int(quicvarint.Len(uint64(msgLen))) + msgLen +
-		int(quicvarint.Len(uint64(paddingLen))) + paddingLen
-	buf := make([]byte, sz)
-	if ok {
-		buf[0] = 0
+// writeRequest asks the server to connect to addr over TCP, or, with udp set,
+// to open a UDP session (whose address is then given per message).
+func writeRequest(w io.Writer, udp bool, addr string) error {
+	var host string
+	var port uint64
+	if !udp {
+		var portText string
+		var err error
+		if host, portText, err = net.SplitHostPort(addr); err != nil {
+			return err
+		}
+		if port, err = strconv.ParseUint(portText, 10, 16); err != nil {
+			return err
+		}
+		if len(host) > maxMessageLength {
+			return newError("address is too long")
+		}
+	}
+	b := make([]byte, 0, 1+2+len(host)+2)
+	if udp {
+		b = append(b, 1)
 	} else {
-		buf[0] = 1
+		b = append(b, 0)
 	}
-	i := varintPut(buf[1:], uint64(msgLen))
-	i += copy(buf[1+i:], msg)
-	i += varintPut(buf[1+i:], uint64(paddingLen))
-	copy(buf[1+i:], padding)
-	_, err := w.Write(buf)
+	b = binary.BigEndian.AppendUint16(b, uint16(len(host)))
+	b = append(b, host...)
+	b = binary.BigEndian.AppendUint16(b, uint16(port))
+	_, err := w.Write(b)
 	return err
 }
 
-// UDPMessage format:
-// Session ID (uint32 BE)
-// Packet ID (uint16 BE)
-// Fragment ID (uint8)
-// Fragment count (uint8)
-// Address length (QUIC varint)
-// Address (bytes)
-// Data...
+// readResponse reads the server's answer to a request: whether it was
+// accepted, the UDP session it opened, and the server's message.
+func readResponse(r io.Reader) (ok bool, session uint32, message string, err error) {
+	var head [1 + 4 + 2]byte
+	if _, err = io.ReadFull(r, head[:]); err != nil {
+		return false, 0, "", err
+	}
+	msg := make([]byte, binary.BigEndian.Uint16(head[5:7]))
+	if _, err = io.ReadFull(r, msg); err != nil {
+		return false, 0, "", err
+	}
+	return head[0] != 0, binary.BigEndian.Uint32(head[1:5]), string(msg), nil
+}
 
-type UDPMessage struct {
-	SessionID uint32 // 4
-	PacketID  uint16 // 2
-	FragID    uint8  // 1
-	FragCount uint8  // 1
-	Addr      string // varint + bytes
+// udpMessage is one datagram of a UDP session, or a fragment of one.
+type udpMessage struct {
+	SessionID uint32
+	Host      string
+	Port      uint16
+	MsgID     uint16 // must not be 0 while the message is fragmented
+	FragID    uint8
+	FragCount uint8 // 1 while the message is whole
 	Data      []byte
 }
 
-func (m *UDPMessage) HeaderSize() int {
-	lAddr := len(m.Addr)
-	return 4 + 2 + 1 + 1 + int(quicvarint.Len(uint64(lAddr))) + lAddr
+func (m *udpMessage) headerSize() int {
+	return 4 + 2 + len(m.Host) + 2 + 2 + 1 + 1 + 2
 }
 
-func (m *UDPMessage) Size() int {
-	return m.HeaderSize() + len(m.Data)
+func (m *udpMessage) size() int {
+	return m.headerSize() + len(m.Data)
 }
 
-func (m *UDPMessage) Serialize(buf []byte) int {
-	// Make sure the buffer is big enough
-	if len(buf) < m.Size() {
+// serialize writes the message into dst and returns its length, or -1 when dst
+// is too small.
+func (m *udpMessage) serialize(dst []byte) int {
+	if len(dst) < m.size() {
 		return -1
 	}
-	// binary.BigEndian.PutUint32(buf, m.SessionID)
-	binary.BigEndian.PutUint16(buf[4:], m.PacketID)
-	buf[6] = m.FragID
-	buf[7] = m.FragCount
-	i := varintPut(buf[8:], uint64(len(m.Addr)))
-	i += copy(buf[8+i:], m.Addr)
-	i += copy(buf[8+i:], m.Data)
-	return 8 + i
+	binary.BigEndian.PutUint32(dst, m.SessionID)
+	binary.BigEndian.PutUint16(dst[4:], uint16(len(m.Host)))
+	i := 6 + copy(dst[6:], m.Host)
+	binary.BigEndian.PutUint16(dst[i:], m.Port)
+	binary.BigEndian.PutUint16(dst[i+2:], m.MsgID)
+	dst[i+4] = m.FragID
+	dst[i+5] = m.FragCount
+	binary.BigEndian.PutUint16(dst[i+6:], uint16(len(m.Data)))
+	copy(dst[i+8:], m.Data)
+	return i + 8 + len(m.Data)
 }
 
-func ParseUDPMessage(msg []byte) (*UDPMessage, error) {
-	m := &UDPMessage{}
-	buf := bytes.NewBuffer(msg)
-	if err := binary.Read(buf, binary.BigEndian, &m.SessionID); err != nil {
-		return nil, err
+func parseUDPMessage(b []byte) (*udpMessage, error) {
+	if len(b) < 6 {
+		return nil, newError("udp message is too short")
 	}
-	if err := binary.Read(buf, binary.BigEndian, &m.PacketID); err != nil {
-		return nil, err
+	m := &udpMessage{SessionID: binary.BigEndian.Uint32(b)}
+	hostLen := int(binary.BigEndian.Uint16(b[4:]))
+	rest := b[6:]
+	if len(rest) < hostLen+2+2+1+1+2 {
+		return nil, newError("udp message is truncated")
 	}
-	if err := binary.Read(buf, binary.BigEndian, &m.FragID); err != nil {
-		return nil, err
+	m.Host = string(rest[:hostLen])
+	rest = rest[hostLen:]
+	m.Port = binary.BigEndian.Uint16(rest)
+	m.MsgID = binary.BigEndian.Uint16(rest[2:])
+	m.FragID = rest[4]
+	m.FragCount = rest[5]
+	dataLen := int(binary.BigEndian.Uint16(rest[6:]))
+	rest = rest[8:]
+	if len(rest) < dataLen {
+		return nil, newError("udp message data is truncated")
 	}
-	if err := binary.Read(buf, binary.BigEndian, &m.FragCount); err != nil {
-		return nil, err
-	}
-	lAddr, err := quicvarint.Read(buf)
-	if err != nil {
-		return nil, err
-	}
-	if lAddr == 0 || lAddr > MaxMessageLength {
-		return nil, errors.New("invalid address length")
-	}
-	bs := buf.Bytes()
-	if len(bs) <= int(lAddr) {
-		// We use <= instead of < here as we expect at least one byte of data after the address
-		return nil, errors.New("invalid message length")
-	}
-	m.Addr = string(bs[:lAddr])
-	m.Data = bs[lAddr:]
+	m.Data = rest[:dataLen]
 	return m, nil
 }
 
-// varintPut is like quicvarint.Append, but instead of appending to a slice,
-// it writes to a fixed-size buffer. Returns the number of bytes written.
-func varintPut(b []byte, i uint64) int {
-	if i <= maxVarInt1 {
-		b[0] = uint8(i)
-		return 1
+// fragment splits m into messages that each fit maxSize.
+func fragment(m udpMessage, maxSize int) []udpMessage {
+	if m.size() <= maxSize {
+		return []udpMessage{m}
 	}
-	if i <= maxVarInt2 {
-		b[0] = uint8(i>>8) | 0x40
-		b[1] = uint8(i)
-		return 2
-	}
-	if i <= maxVarInt4 {
-		b[0] = uint8(i>>24) | 0x80
-		b[1] = uint8(i >> 16)
-		b[2] = uint8(i >> 8)
-		b[3] = uint8(i)
-		return 4
-	}
-	if i <= maxVarInt8 {
-		b[0] = uint8(i>>56) | 0xc0
-		b[1] = uint8(i >> 48)
-		b[2] = uint8(i >> 40)
-		b[3] = uint8(i >> 32)
-		b[4] = uint8(i >> 24)
-		b[5] = uint8(i >> 16)
-		b[6] = uint8(i >> 8)
-		b[7] = uint8(i)
-		return 8
-	}
-	panic(fmt.Sprintf("%#x doesn't fit into 62 bits", i))
-}
-
-func FragUDPMessage(m *UDPMessage, maxSize int) []UDPMessage {
-	if m.Size() <= maxSize {
-		return []UDPMessage{*m}
-	}
-	fullPayload := m.Data
-	maxPayloadSize := maxSize - m.HeaderSize()
-	if maxPayloadSize <= 0 {
+	maxPayload := maxSize - m.headerSize()
+	if maxPayload <= 0 {
 		return nil
 	}
-	off := 0
-	fragID := uint8(0)
-	fragCount := uint8((len(fullPayload) + maxPayloadSize - 1) / maxPayloadSize) // round up
-	frags := make([]UDPMessage, fragCount)
-	for off < len(fullPayload) {
-		payloadSize := len(fullPayload) - off
-		if payloadSize > maxPayloadSize {
-			payloadSize = maxPayloadSize
-		}
-		frag := *m
-		frag.FragID = fragID
-		frag.FragCount = fragCount
-		frag.Data = fullPayload[off : off+payloadSize]
-		frags[fragID] = frag
-		off += payloadSize
-		fragID++
+	count := (len(m.Data) + maxPayload - 1) / maxPayload
+	if count > 0xFF {
+		return nil
+	}
+	frags := make([]udpMessage, 0, count)
+	for off, id := 0, 0; off < len(m.Data); id++ {
+		size := min(maxPayload, len(m.Data)-off)
+		frag := m
+		frag.FragID = uint8(id)
+		frag.FragCount = uint8(count)
+		frag.Data = m.Data[off : off+size]
+		frags = append(frags, frag)
+		off += size
 	}
 	return frags
 }
 
-// Defragger handles the defragmentation of UDP messages.
-// The current implementation can only handle one packet ID at a time.
-// If another packet arrives before a packet has received all fragments
-// in their entirety, any previous state is discarded.
-type Defragger struct {
-	pktID uint16
-	frags []*UDPMessage
+// defragger puts a fragmented message back together; it keeps only the message
+// being assembled and drops one a newer message overtakes.
+type defragger struct {
+	msgID uint16
+	frags []*udpMessage
 	count uint8
-	size  int // data size
 }
 
-func (d *Defragger) Feed(m *UDPMessage) *UDPMessage {
+func (d *defragger) feed(m *udpMessage) *udpMessage {
 	if m.FragCount <= 1 {
 		return m
 	}
 	if m.FragID >= m.FragCount {
-		// wtf is this?
 		return nil
 	}
-	if m.PacketID != d.pktID || m.FragCount != uint8(len(d.frags)) {
-		// new message, clear previous state
-		d.pktID = m.PacketID
-		d.frags = make([]*UDPMessage, m.FragCount)
-		d.frags[m.FragID] = m
+	if m.MsgID != d.msgID || int(m.FragCount) != len(d.frags) {
+		d.msgID = m.MsgID
+		d.frags = make([]*udpMessage, m.FragCount)
 		d.count = 1
-		d.size = len(m.Data)
-	} else if d.frags[m.FragID] == nil {
 		d.frags[m.FragID] = m
-		d.count++
-		d.size += len(m.Data)
-		if int(d.count) == len(d.frags) {
-			// all fragments received, assemble
-			data := make([]byte, d.size)
-			off := 0
-			for _, frag := range d.frags {
-				off += copy(data[off:], frag.Data)
-			}
-			m.Data = data
-			m.FragID = 0
-			m.FragCount = 1
-			return m
-		}
+		return nil
 	}
-	return nil
+	if d.frags[m.FragID] != nil {
+		return nil
+	}
+	d.frags[m.FragID] = m
+	d.count++
+	if int(d.count) != len(d.frags) {
+		return nil
+	}
+	var data []byte
+	for _, frag := range d.frags {
+		data = append(data, frag.Data...)
+	}
+	whole := *m
+	whole.Data = data
+	whole.FragID = 0
+	whole.FragCount = 1
+	return &whole
 }

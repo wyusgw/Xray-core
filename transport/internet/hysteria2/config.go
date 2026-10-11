@@ -1,4 +1,4 @@
-package hysteria
+package hysteria2
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common"
-	"github.com/xtls/xray-core/proxy/hysteria/account"
+	"github.com/xtls/xray-core/proxy/hysteria2/account"
 	"github.com/xtls/xray-core/transport/internet"
 )
 
@@ -81,7 +81,7 @@ const (
 	StatusInactive
 )
 
-const protocolName = "hysteria"
+const protocolName = "hysteria2"
 
 func init() {
 	common.Must(internet.RegisterProtocolConfigCreator(protocolName, func() interface{} {

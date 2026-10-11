@@ -18,11 +18,11 @@ import (
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/proxy"
-	hysteria_proxy "github.com/xtls/xray-core/proxy/hysteria"
+	hysteria2_proxy "github.com/xtls/xray-core/proxy/hysteria2"
 	mieru_proxy "github.com/xtls/xray-core/proxy/mieru"
 	tuic_proxy "github.com/xtls/xray-core/proxy/tuic"
 	"github.com/xtls/xray-core/transport/internet"
-	"github.com/xtls/xray-core/transport/internet/hysteria"
+	"github.com/xtls/xray-core/transport/internet/hysteria2"
 	mierutransport "github.com/xtls/xray-core/transport/internet/mieru"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tcp"
@@ -138,8 +138,8 @@ func (w *tcpWorker) Proxy() proxy.Inbound {
 func (w *tcpWorker) Start() error {
 	ctx := context.Background()
 
-	if v, ok := w.proxy.(*hysteria_proxy.Server); ok {
-		ctx = hysteria.ContextWithValidator(ctx, v.HysteriaInboundValidator())
+	if v, ok := w.proxy.(*hysteria2_proxy.Server); ok {
+		ctx = hysteria2.ContextWithValidator(ctx, v.HysteriaInboundValidator())
 	}
 
 	if v, ok := w.proxy.(*tuic_proxy.Inbound); ok {

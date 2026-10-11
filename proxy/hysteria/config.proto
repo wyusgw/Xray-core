@@ -7,12 +7,21 @@ option java_package = "com.xray.proxy.hysteria";
 option java_multiple_files = true;
 
 import "common/protocol/server_spec.proto";
-import "common/protocol/user.proto";
 
 message ClientConfig {
   xray.common.protocol.ServerEndpoint server = 1;
-}
 
-message ServerConfig {
-  repeated xray.common.protocol.User users = 1;
+  string auth = 2;
+
+  // Bytes per second the client can send and receive. The server's own
+  // receive rate, not these, sets the pace of the Brutal congestion control.
+  uint64 up_bps = 3;
+  uint64 down_bps = 4;
+
+  // Password of the "xplus" packet obfuscation; empty means none.
+  string obfs_password = 5;
+
+  string server_name = 6;
+  bool allow_insecure = 7;
+  repeated string alpn = 8;
 }
