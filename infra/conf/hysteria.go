@@ -3,7 +3,9 @@ package conf
 import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/proxy/hysteria"
+	"github.com/xtls/xray-core/proxy/hysteria2/account"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -63,6 +65,38 @@ func (c *HysteriaClientConfig) Build() (proto.Message, error) {
 	}
 	if c.Obfs == "xplus" {
 		config.ObfsPassword = c.ObfsPassword
+	}
+	return config, nil
+}
+
+// HysteriaUserConfig is a user of the first Hysteria generation; Auth is the
+// secret its client sends.
+type HysteriaUserConfig struct {
+	Auth  string `json:"auth"`
+	Level uint32 `json:"level"`
+	Email string `json:"email"`
+}
+
+// HysteriaServerConfig is the first Hysteria generation, the `hysteria`
+// inbound; it needs the `hysteria` transport underneath.
+type HysteriaServerConfig struct {
+	Users   []*HysteriaUserConfig `json:"users"`
+	Clients []*HysteriaUserConfig `json:"clients"`
+}
+
+func (c *HysteriaServerConfig) Build() (proto.Message, error) {
+	config := new(hysteria.ServerConfig)
+
+	users := c.Users
+	if c.Clients != nil {
+		users = c.Clients
+	}
+	for _, user := range users {
+		config.Users = append(config.Users, &protocol.User{
+			Email:   user.Email,
+			Level:   user.Level,
+			Account: serial.ToTypedMessage(&account.Account{Auth: user.Auth}),
+		})
 	}
 	return config, nil
 }

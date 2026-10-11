@@ -18,6 +18,7 @@ import (
 	"github.com/xtls/xray-core/transport/internet/headers/http"
 	"github.com/xtls/xray-core/transport/internet/headers/noop"
 	"github.com/xtls/xray-core/transport/internet/httpupgrade"
+	"github.com/xtls/xray-core/transport/internet/hysteria"
 	"github.com/xtls/xray-core/transport/internet/hysteria2"
 	"github.com/xtls/xray-core/transport/internet/kcp"
 	"github.com/xtls/xray-core/transport/internet/splithttp"
@@ -748,6 +749,26 @@ type Masquerade struct {
 	Content    string            `json:"content"`
 	Headers    map[string]string `json:"headers"`
 	StatusCode int32             `json:"statusCode"`
+}
+
+// HysteriaConfig is the first Hysteria generation, the `hysteria` transport of
+// an inbound.
+type HysteriaConfig struct {
+	Obfs         string `json:"obfs"`
+	ObfsPassword string `json:"obfsPassword"`
+}
+
+func (c *HysteriaConfig) Build() (proto.Message, error) {
+	switch c.Obfs {
+	case "":
+	case "xplus":
+		if c.ObfsPassword == "" {
+			return nil, errors.New("hysteria: obfsPassword is required with xplus")
+		}
+	default:
+		return nil, errors.New("hysteria: unknown obfs: ", c.Obfs)
+	}
+	return &hysteria.Config{ObfsPassword: c.ObfsPassword}, nil
 }
 
 type Hysteria2Config struct {

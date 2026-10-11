@@ -7,6 +7,7 @@ option java_package = "com.xray.proxy.hysteria";
 option java_multiple_files = true;
 
 import "common/protocol/server_spec.proto";
+import "common/protocol/user.proto";
 
 message ClientConfig {
   xray.common.protocol.ServerEndpoint server = 1;
@@ -24,4 +25,10 @@ message ClientConfig {
   string server_name = 6;
   bool allow_insecure = 7;
   repeated string alpn = 8;
+}
+
+message ServerConfig {
+  // Each user's account is a xray.proxy.hysteria2.account.Account: the secret
+  // a client sends in its hello.
+  repeated xray.common.protocol.User users = 1;
 }

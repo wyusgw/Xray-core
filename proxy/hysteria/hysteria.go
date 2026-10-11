@@ -1,5 +1,6 @@
-// Package hysteria is the outbound of the first Hysteria generation, named
-// `hysteria` in a config; the second generation is `hysteria2`.
+// Package hysteria is the outbound and the inbound of the first Hysteria
+// generation, named `hysteria` in a config; the second generation is
+// `hysteria2`.
 //
 // The two generations share a name and little else: the handshake, the request
 // messages, the UDP framing and the packet obfuscation all differ. As in other
@@ -8,6 +9,8 @@
 package hysteria
 
 import (
+	"strconv"
+
 	"github.com/xtls/xray-core/common/errors"
 )
 
@@ -21,4 +24,8 @@ const protocolName = "hysteria"
 
 func newError(values ...interface{}) *errors.Error {
 	return errors.New(values...)
+}
+
+func portText(port uint16) string {
+	return strconv.Itoa(int(port))
 }

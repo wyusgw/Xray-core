@@ -32,6 +32,7 @@ var (
 		"trojan":        func() interface{} { return new(TrojanServerConfig) },
 		"tuic":          func() interface{} { return new(TuicServerConfig) },
 		"anytls":        func() interface{} { return new(AnyTLSServerConfig) },
+		"hysteria":      func() interface{} { return new(HysteriaServerConfig) },
 		"hysteria2":     func() interface{} { return new(Hysteria2ServerConfig) },
 		"mieru":         func() interface{} { return new(MieruServerConfig) },
 		"tun":           func() interface{} { return new(TunConfig) },

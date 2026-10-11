@@ -12,6 +12,7 @@ import (
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/infra/conf"
 	"github.com/xtls/xray-core/infra/conf/serial"
+	"github.com/xtls/xray-core/proxy/hysteria"
 	"github.com/xtls/xray-core/proxy/hysteria2"
 	"github.com/xtls/xray-core/proxy/shadowsocks"
 	"github.com/xtls/xray-core/proxy/shadowsocks_2022"
@@ -88,6 +89,8 @@ func extractInboundUsers(inb *core.InboundHandlerConfig) []*protocol.User {
 	case *shadowsocks.ServerConfig:
 		return ty.Users
 	case *shadowsocks_2022.MultiUserServerConfig:
+		return ty.Users
+	case *hysteria.ServerConfig:
 		return ty.Users
 	case *hysteria2.ServerConfig:
 		return ty.Users
