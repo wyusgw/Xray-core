@@ -153,7 +153,7 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			var err error
 
 			if inbound.User != nil {
-				// 已知会话用户，直接基于该用户解码，避免修改全局 validator
+				// The session user is known: decode with it, not the shared validator.
 				request, data, err = DecodeUDPPacketWithUser(inbound.User, payload)
 			} else {
 				request, data, err = DecodeUDPPacketWithCache(s.validator, payload, sourceIPKey(inbound))
@@ -306,8 +306,9 @@ func init() {
 	}))
 }
 
-// sourceIPKey 返回用户缓存的键：客户端的IP，不含端口。同一客户端的每个
-// TCP 连接源端口都不同，带端口的键永远不会命中。
+// sourceIPKey returns the user cache key: the client IP without the port.
+// Every TCP connection of a client has a new source port, so a key with the
+// port would never match.
 func sourceIPKey(inbound *session.Inbound) string {
 	if inbound == nil || !inbound.Source.IsValid() {
 		return ""
