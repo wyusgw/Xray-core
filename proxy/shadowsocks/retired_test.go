@@ -265,3 +265,25 @@ func TestSharedKeyNotRetired(t *testing.T) {
 		t.Fatal("last user of the key not retired")
 	}
 }
+
+// A failed full scan also tries removed users, so many removed users make
+// full scans expensive even with few users. They must be limited too.
+func TestFewUsersManyRetiredLimited(t *testing.T) {
+	v := newTestValidator(t, 8)
+	retired := make([]*protocol.MemoryUser, scanLimitMinUsers)
+	for i := range retired {
+		retired[i] = testUser(1000 + i)
+	}
+	v.Retire(retired)
+	junk := udpPacketFor(t, testUser(-1))
+	const ip = "192.0.2.60"
+	for i := 0; i < scanBurst; i++ {
+		udpGet(v, junk, ip)
+	}
+	if v.scanLimit.Allow(ip) {
+		t.Fatal("junk not limited with many removed users")
+	}
+	if u, err := udpGet(v, udpPacketFor(t, v.users[3]), "192.0.2.61"); err != nil || u != v.users[3] {
+		t.Fatalf("user from another IP: user=%v err=%v", u, err)
+	}
+}

@@ -17,7 +17,8 @@ import (
 // An IP without tokens skips the full scan and only tries its cached users
 // and the scanLimitedRecentUsers most recent users.
 const (
-	// Full scans are not limited below this many users.
+	// Full scans are not limited below this many keys (users and removed
+	// users).
 	scanLimitMinUsers = 256
 
 	// Failed full scans an IP can make in a row.

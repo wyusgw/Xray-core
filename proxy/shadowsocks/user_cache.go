@@ -220,8 +220,10 @@ func (s *userCacheShard) get(key string) *protocol.MemoryUser {
 	// 如果超过5秒未更新LRU，才执行更新
 	if now-lastAccess > 5e9 { // 5e9纳秒 = 5秒
 		s.mu.Lock()
-		// 双重检查：其他goroutine可能已经更新过了
-		if now-entry.lastAccess > 5e9 {
+		// The entry may have been updated, evicted or removed after the
+		// read lock was released. Moving an evicted node would put it back
+		// into the list and corrupt it.
+		if s.cache[key] == entry && now-entry.lastAccess > 5e9 {
 			s.list.moveToFront(entry.node)
 			entry.lastAccess = now
 		}
@@ -255,8 +257,10 @@ func (s *userCacheShard) getMultiUser(key string) []*protocol.MemoryUser {
 	now := time.Now().UnixNano()
 	if now-lastAccess > 5e9 { // 5秒
 		s.mu.Lock()
-		// 双重检查：其他goroutine可能已经更新过了
-		if now-entry.lastAccess > 5e9 {
+		// The entry may have been updated, evicted or removed after the
+		// read lock was released. Moving an evicted node would put it back
+		// into the list and corrupt it.
+		if s.cache[key] == entry && now-entry.lastAccess > 5e9 {
 			s.list.moveToFront(entry.node)
 			entry.lastAccess = now
 		}

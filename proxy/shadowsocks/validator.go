@@ -287,8 +287,8 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 		}
 	}
 
-	// Full scans are cheap with few users: do not limit them.
-	gated := v.GetCount() >= scanLimitMinUsers
+	// Full scans are cheap with few keys to try: do not limit them.
+	gated := v.scanKeys() >= scanLimitMinUsers
 	limited := gated && cacheKey != "" && v.scanLimit != nil
 	if limited && !v.scanLimit.Allow(cacheKey) {
 		// Recent full scans from this IP matched nobody: probes or junk.
@@ -366,11 +366,17 @@ func (v *Validator) isRetired(u *protocol.MemoryUser) bool {
 	return v.retired.contains(u)
 }
 
-// scanThrottled reports whether full scans from cacheKey are being limited.
-func (v *Validator) scanThrottled(cacheKey string) bool {
+// scanKeys returns how many keys a failed full scan tries: every user, then
+// every removed user.
+func (v *Validator) scanKeys() int {
 	v.RLock()
 	defer v.RUnlock()
-	return v.scanLimit != nil && len(v.users) >= scanLimitMinUsers && !v.scanLimit.Allow(cacheKey)
+	return len(v.users) + len(v.retired.byKey)
+}
+
+// scanThrottled reports whether full scans from cacheKey are being limited.
+func (v *Validator) scanThrottled(cacheKey string) bool {
+	return v.scanLimit != nil && v.scanKeys() >= scanLimitMinUsers && !v.scanLimit.Allow(cacheKey)
 }
 
 // confirm checks that a cached user has not been removed and caches it for
