@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/protocol"
@@ -19,8 +20,10 @@ import (
 // Multi-user AEAD carries no user ID, so a request is matched by trying each
 // user's key. Lookup order:
 //  1. users that succeeded from the same source IP before
-//  2. users that succeeded recently, most recent first
-//  3. all users, rate-limited per source IP (see scanLimiter)
+//  2. removed users whose clients connect from the source IP: rejected
+//  3. users that succeeded recently, most recent first
+//  4. all users, limited per source IP (see scanLimiter) and in the process
+//     (see acquireFullScan); then removed users, to recognize expired clients
 type Validator struct {
 	sync.RWMutex
 	users      []*protocol.MemoryUser
@@ -28,6 +31,7 @@ type Validator struct {
 	emailIndex map[string]*protocol.MemoryUser // lowercased email -> user
 	userCache  *UserCache                      // users keyed by source IP
 	scanLimit  *scanLimiter                    // limits failed full scans per source IP
+	retired    retiredUsers                    // keys of removed users
 
 	behaviorSeed  uint64
 	behaviorFused bool
@@ -65,6 +69,7 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 
 	v.userPos[u] = len(v.users)
 	v.users = append(v.users, u)
+	v.retired.remove(u)
 
 	if u.Email != "" {
 		v.emailIndex[strings.ToLower(u.Email)] = u
@@ -114,6 +119,7 @@ func (v *Validator) Del(email string) error {
 		v.removeAt(idx)
 	}
 	delete(v.emailIndex, email)
+	v.retired.add(user, time.Now())
 
 	if v.userCache != nil {
 		v.userCache.Remove(email)
@@ -174,6 +180,9 @@ func (v *Validator) UpdateUser(email string, newUser *protocol.MemoryUser) error
 		delete(v.userPos, oldUser)
 		v.userPos[newUser] = idx
 	}
+	// Clients still using the old key are like clients of a removed user.
+	v.retired.add(oldUser, time.Now())
+	v.retired.remove(newUser)
 
 	delete(v.emailIndex, email)
 	if newUser.Email != "" {
@@ -200,11 +209,20 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 
 	if cacheKey != "" && v.userCache != nil {
 		ipUsers := v.userCache.GetMultiUser(cacheKey)
-
-		// Try users that succeeded from this IP, then recent users.
 		for _, user := range ipUsers {
 			if t.try(user) && v.confirm(cacheKey, user) {
 				return user, t.aead, t.ret, t.ivLen, nil
+			}
+		}
+		if v.scanLimit != nil {
+			for _, user := range v.scanLimit.Retired(cacheKey) {
+				if !t.try(user) {
+					continue
+				}
+				if v.isRetired(user) {
+					return nil, nil, nil, 0, ErrNotFound
+				}
+				v.scanLimit.DropRetired(cacheKey, user)
 			}
 		}
 		// There can be as many recent users as users, so a throttled IP
@@ -223,21 +241,29 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 		}
 	}
 
-	v.RLock()
-	totalUsers := len(v.users)
-	limited := cacheKey != "" && v.scanLimit != nil && totalUsers >= scanLimitMinUsers
+	// Full scans are cheap with few users: do not limit them.
+	gated := v.GetCount() >= scanLimitMinUsers
+	limited := gated && cacheKey != "" && v.scanLimit != nil
 	if limited && !v.scanLimit.Allow(cacheKey) {
-		// Recent full scans from this IP all failed: expired users or probes.
-		v.RUnlock()
+		// Recent full scans from this IP matched nobody: probes or junk.
 		return nil, nil, nil, 0, ErrNotFound
 	}
+	if gated {
+		// Wait for a slot without holding the lock, so that Add and Del
+		// are not blocked meanwhile.
+		if !acquireFullScan() {
+			return nil, nil, nil, 0, ErrNotFound
+		}
+		defer releaseFullScan()
+	}
 
+	v.RLock()
+	totalUsers := len(v.users)
 	// Start at a random user so that every user is equally fast to match.
 	startIdx := 0
 	if totalUsers > 1 {
 		startIdx = rand.IntN(totalUsers)
 	}
-
 	for i := 0; i < totalUsers; i++ {
 		user := v.users[(startIdx+i)%totalUsers]
 		account := user.Account.(*MemoryAccount)
@@ -259,9 +285,18 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 		}
 		return u, aead, ret, ivLen, nil
 	}
+	var retired *protocol.MemoryUser
+	if cacheKey != "" {
+		retired = v.retired.match(t, time.Now())
+	}
 	v.RUnlock()
 
-	if limited {
+	switch {
+	case retired != nil && v.scanLimit != nil:
+		// A client of a removed user: reject it cheaply from now on,
+		// without limiting other clients behind the same IP.
+		v.scanLimit.AddRetired(cacheKey, retired)
+	case limited:
 		v.scanLimit.Fail(cacheKey)
 	}
 	return nil, nil, nil, 0, ErrNotFound
@@ -276,6 +311,13 @@ func (v *Validator) GetBehaviorSeed() uint64 {
 		v.behaviorSeed = rand.Uint64()
 	}
 	return v.behaviorSeed
+}
+
+// isRetired reports whether u is a removed user that is not in use again.
+func (v *Validator) isRetired(u *protocol.MemoryUser) bool {
+	v.RLock()
+	defer v.RUnlock()
+	return v.retired.contains(u)
 }
 
 // scanThrottled reports whether full scans from cacheKey are being limited.
