@@ -39,6 +39,7 @@ const (
 	// recentRebuildInterval 第二级缓存按最近成功时间排序的快照多久重建一次。
 	recentRebuildInterval = time.Second
 ) // UserCache 两级用户缓存系统，专门优化IP变化场景
+
 // 设计思路：
 // 1. 第一级缓存：IP → 用户（处理固定IP场景，O(1)查找）
 // 2. 第二级缓存：成功用户列表（处理IP变化场景，O(k)遍历，k<<n）

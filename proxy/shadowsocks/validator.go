@@ -16,17 +16,18 @@ import (
 
 // Validator stores valid Shadowsocks users.
 //
-// 多用户 AEAD 协议里没有用户标识，验证时只能逐个用户试解。查找顺序：
-// 1. 第一级：这个源 IP 之前成功过的用户（O(1)）
-// 2. 第二级：最近成功过的用户，最近的在前（O(在线用户数)）
-// 3. 全量扫描（O(总用户数)），按源 IP 限速，见 scanLimiter
+// Multi-user AEAD carries no user ID, so a request is matched by trying each
+// user's key. Lookup order:
+//  1. users that succeeded from the same source IP before
+//  2. users that succeeded recently, most recent first
+//  3. all users, rate-limited per source IP (see scanLimiter)
 type Validator struct {
 	sync.RWMutex
 	users      []*protocol.MemoryUser
-	userPos    map[*protocol.MemoryUser]int    // 用户在 users 中的下标，删除时 O(1) 定位
-	emailIndex map[string]*protocol.MemoryUser // Email -> User 的快速索引
-	userCache  *UserCache                      // 基于源地址的用户缓存
-	scanLimit  *scanLimiter                    // 全量扫描按源 IP 限速
+	userPos    map[*protocol.MemoryUser]int    // index of each user in users
+	emailIndex map[string]*protocol.MemoryUser // lowercased email -> user
+	userCache  *UserCache                      // users keyed by source IP
+	scanLimit  *scanLimiter                    // limits failed full scans per source IP
 
 	behaviorSeed  uint64
 	behaviorFused bool
@@ -34,7 +35,7 @@ type Validator struct {
 
 var ErrNotFound = errors.New("Not Found")
 
-// initializeIfNeeded 初始化索引和缓存（内部使用，调用者需持有锁）
+// initializeIfNeeded must be called with the write lock held.
 func (v *Validator) initializeIfNeeded() {
 	if v.emailIndex == nil {
 		v.emailIndex = make(map[string]*protocol.MemoryUser)
@@ -43,7 +44,6 @@ func (v *Validator) initializeIfNeeded() {
 		v.userPos = make(map[*protocol.MemoryUser]int)
 	}
 	if v.userCache == nil {
-		// 一级缓存（IP分片）2048 容量，LRU 淘汰；二级缓存（成功用户）按 TTL 淘汰
 		v.userCache = NewUserCache(2048)
 	}
 	if v.scanLimit == nil {
@@ -79,7 +79,8 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 	return nil
 }
 
-// removeAt 用末尾元素填补下标 idx 并缩短切片（调用者需持有写锁）
+// removeAt removes users[idx] by moving the last user into its place.
+// It must be called with the write lock held.
 func (v *Validator) removeAt(idx int) {
 	last := len(v.users) - 1
 	removed := v.users[idx]
@@ -152,7 +153,7 @@ func (v *Validator) GetCount() int64 {
 	return int64(len(v.users))
 }
 
-// UpdateUser 更新用户信息（如修改密码），会清除该用户的缓存
+// UpdateUser replaces the user with the given email and drops it from the cache.
 func (v *Validator) UpdateUser(email string, newUser *protocol.MemoryUser) error {
 	if email == "" {
 		return errors.New("Email must not be empty.")
@@ -191,31 +192,30 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 	return v.GetWithCache(bs, command, "")
 }
 
-// GetWithCache 带两级缓存支持的用户验证
-//
-// cacheKey: 缓存键（客户端IP，不含端口：同一客户端每个连接的端口都不同），为空则跳过缓存和限速
+// GetWithCache is like Get, but uses cacheKey (the client IP without port)
+// to look up cached users and to rate-limit full scans. An empty cacheKey
+// disables both.
 func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cacheKey string) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	t := &trialDecrypter{bs: bs, command: command}
 
 	if cacheKey != "" && v.userCache != nil {
 		ipUsers := v.userCache.GetMultiUser(cacheKey)
 
-		// 第一级：这个IP之前成功过的用户；第二级：最近成功过的用户，
-		// 最近的在前。都未命中才全量扫描。
+		// Try users that succeeded from this IP, then recent users.
 		for _, user := range ipUsers {
 			if t.try(user) && v.confirm(cacheKey, user) {
 				return user, t.aead, t.ret, t.ivLen, nil
 			}
 		}
-		// 被限速的IP（最近的全量扫描都失败了）只试最近成功的前几个用户：
-		// 最近成功用户可能有上万个，全部试一遍的成本和全量扫描相当
+		// There can be as many recent users as users, so a throttled IP
+		// only tries the most recent ones.
 		recent := v.userCache.RecentUsers()
 		if len(recent) > scanLimitedRecentUsers && v.scanThrottled(cacheKey) {
 			recent = recent[:scanLimitedRecentUsers]
 		}
 		for _, entry := range recent {
 			if slices.Contains(ipUsers, entry.user) {
-				continue // 第一级已经试过
+				continue // already tried
 			}
 			if t.try(entry.user) && v.confirm(cacheKey, entry.user) {
 				return entry.user, t.aead, t.ret, t.ivLen, nil
@@ -227,12 +227,12 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 	totalUsers := len(v.users)
 	limited := cacheKey != "" && v.scanLimit != nil && totalUsers >= scanLimitMinUsers
 	if limited && !v.scanLimit.Allow(cacheKey) {
-		// 这个IP最近的全量扫描都失败了（过期用户、扫描器），先不扫
+		// Recent full scans from this IP all failed: expired users or probes.
 		v.RUnlock()
 		return nil, nil, nil, 0, ErrNotFound
 	}
 
-	// 随机起始位置，所有用户有平等的验证机会
+	// Start at a random user so that every user is equally fast to match.
 	startIdx := 0
 	if totalUsers > 1 {
 		startIdx = rand.IntN(totalUsers)
@@ -249,7 +249,7 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 		} else {
 			u, ivLen = user, account.Cipher.IVSize()
 		}
-		// 持有读锁更新缓存，不会与 Del 交错
+		// Holding the read lock keeps this from racing with Del.
 		if cacheKey != "" && v.userCache != nil {
 			v.userCache.PutWithSuccess(cacheKey, user)
 		}
@@ -278,17 +278,16 @@ func (v *Validator) GetBehaviorSeed() uint64 {
 	return v.behaviorSeed
 }
 
-// scanThrottled 报告 cacheKey 的全量扫描是否正被限速
+// scanThrottled reports whether full scans from cacheKey are being limited.
 func (v *Validator) scanThrottled(cacheKey string) bool {
 	v.RLock()
 	defer v.RUnlock()
 	return v.scanLimit != nil && len(v.users) >= scanLimitMinUsers && !v.scanLimit.Allow(cacheKey)
 }
 
-// confirm 确认缓存命中的用户仍然有效，并在同一把读锁下更新缓存。Del 持有
-// 写锁时从索引和缓存中移除用户：这里要么整个发生在 Del 之前（写入的缓存
-// 条目随后被 Del 清除），要么在之后（用户已不在索引中而被拒绝），已删除
-// 的用户不会因为并发的握手重新进入缓存。
+// confirm checks that a cached user has not been removed and caches it for
+// cacheKey under the same read lock. Del removes users under the write lock,
+// so a concurrent handshake cannot put a removed user back into the cache.
 func (v *Validator) confirm(cacheKey string, u *protocol.MemoryUser) bool {
 	v.RLock()
 	defer v.RUnlock()
@@ -299,13 +298,12 @@ func (v *Validator) confirm(cacheKey string, u *protocol.MemoryUser) bool {
 	return true
 }
 
-// zeroNonce 是每个流的第一个块（TCP）或每个 UDP 包使用的全零 nonce，
-// 足够任何支持的 AEAD 使用
+// zeroNonce is the nonce of the first TCP chunk and of every UDP packet.
 var zeroNonce [24]byte
 
-// trialDecrypter 用一个包的头部逐个尝试候选用户：多用户 AEAD 协议里没有
-// 用户标识，只能逐个派生子密钥试解。它按盐长度复用子密钥派生的状态和
-// 输出缓冲区，每个候选用户只分配 AEAD 本身。
+// trialDecrypter tries candidate users' keys against one request header.
+// It reuses the subkey derivation state for each salt length and the output
+// buffer, so each candidate only allocates its AEAD.
 type trialDecrypter struct {
 	bs      []byte
 	command protocol.RequestCommand
@@ -313,7 +311,7 @@ type trialDecrypter struct {
 	subkey  [32]byte
 	out     []byte
 
-	// 最近一次 try 成功时的结果
+	// results of the last successful try
 	aead  cipher.AEAD
 	ret   []byte
 	ivLen int32
@@ -324,8 +322,8 @@ type saltKDF struct {
 	kdf   *subkeyKDF
 }
 
-// try 报告 user 的密钥能否解开这个包的头部，成功时结果存放在 t.aead、
-// t.ret（解出的数据，UDP 为整个包的明文）和 t.ivLen 中。
+// try reports whether user's key opens the request header. On success the
+// results are in t.aead, t.ret (for UDP, the whole plaintext) and t.ivLen.
 func (t *trialDecrypter) try(user *protocol.MemoryUser) bool {
 	account, ok := user.Account.(*MemoryAccount)
 	// AEAD payload decoding requires the payload to be over 32 bytes
@@ -341,7 +339,7 @@ func (t *trialDecrypter) try(user *protocol.MemoryUser) bool {
 	var ciphertext []byte
 	switch t.command {
 	case protocol.RequestCommandTCP:
-		ciphertext = t.bs[ivLen : ivLen+18] // 2字节长度 + 16字节标签
+		ciphertext = t.bs[ivLen : ivLen+18] // 2-byte length + 16-byte tag
 	case protocol.RequestCommandUDP:
 		ciphertext = t.bs[ivLen:]
 	default:

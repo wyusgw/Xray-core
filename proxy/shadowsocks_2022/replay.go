@@ -151,10 +151,11 @@ func (m *UDPSessionManager) GetOrCreate(sessionID uint64) *ServerUDPSession {
 	return s
 }
 
-// Lookup 返回 sessionID 对应的已存在会话；不存在时返回一个未登记的新会话
-// （stored 为 false）。会话 ID 来自未经认证的包头，调用者必须在包解密
-// 成功后才用 Store 登记，否则任意垃圾 UDP 包都会在表里留下一个会话，直到
-// 超时才清理。
+// Lookup returns the stored session for sessionID, or a new session that is
+// not stored yet (stored is false). The session ID comes from an
+// unauthenticated header, so callers must call Store only after the packet
+// is decrypted; otherwise any junk packet would leave a session until it
+// times out.
 func (m *UDPSessionManager) Lookup(sessionID uint64) (s *ServerUDPSession, stored bool) {
 	now := time.Now().Unix()
 	if s, ok := m.sessions.Load(sessionID); ok {
@@ -169,8 +170,9 @@ func (m *UDPSessionManager) Lookup(sessionID uint64) (s *ServerUDPSession, store
 	return s, false
 }
 
-// Store 登记 Lookup 返回的未登记会话，packetID 是刚通过认证的包。并发登记
-// 同一会话时以先登记的为准，返回实际在表中的会话。
+// Store stores a session returned by Lookup after packetID authenticated.
+// If the session was stored concurrently, the stored one wins and is
+// returned.
 func (m *UDPSessionManager) Store(s *ServerUDPSession, packetID uint64) *ServerUDPSession {
 	now := time.Now().Unix()
 	actual, loaded := m.sessions.LoadOrStore(s.SessionID, s)

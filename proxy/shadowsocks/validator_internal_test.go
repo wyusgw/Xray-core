@@ -48,7 +48,7 @@ func TestScanLimiter(t *testing.T) {
 		t.Fatal("other IP blocked")
 	}
 
-	// 令牌随时间恢复
+	// Tokens refill over time.
 	s := l.shard(ip)
 	s.buckets[ip].last -= int64(scanRefill)
 	if !l.Allow(ip) {
@@ -78,7 +78,7 @@ func TestValidatorFullScanLimited(t *testing.T) {
 	for i := 0; i < scanLimitMinUsers; i++ {
 		common.Must(v.Add(testUser(i)))
 	}
-	expired := udpPacketFor(t, testUser(-1)) // 不在用户列表中，模拟过期用户
+	expired := udpPacketFor(t, testUser(-1)) // not a user, like an expired one
 	const badIP = "198.51.100.7"
 	for i := 0; i < scanBurst; i++ {
 		if _, _, _, _, err := v.GetWithCache(expired, protocol.RequestCommandUDP, badIP); err != ErrNotFound {
@@ -89,15 +89,15 @@ func TestValidatorFullScanLimited(t *testing.T) {
 		t.Fatal("expired client not limited")
 	}
 
-	// 其他 IP 的正常用户不受影响
+	// Other IPs are not affected.
 	good := testUser(42)
 	u, _, _, _, err := v.GetWithCache(udpPacketFor(t, good), protocol.RequestCommandUDP, "198.51.100.8")
 	if err != nil || u.Email != good.Email {
 		t.Fatalf("good user from clean IP: user=%v err=%v", u, err)
 	}
 
-	// 被限速的 IP 上，最近成功过的用户仍然走缓存通过（快照最多每
-	// recentRebuildInterval 重建一次）
+	// A recent user still gets through from a throttled IP once the
+	// recent-user snapshot is rebuilt.
 	time.Sleep(recentRebuildInterval + 50*time.Millisecond)
 	u, _, _, _, err = v.GetWithCache(udpPacketFor(t, good), protocol.RequestCommandUDP, badIP)
 	if err != nil || u.Email != good.Email {
@@ -174,7 +174,7 @@ func BenchmarkExpiredClientFullScan(b *testing.B) {
 	})
 }
 
-// fillRecent 让 users 成为最近成功用户，users[0] 最近
+// fillRecent makes users the recent users, users[0] the most recent.
 func fillRecent(v *Validator, users []*protocol.MemoryUser) {
 	now := time.Now().UnixNano()
 	for i, u := range users {
@@ -182,7 +182,7 @@ func fillRecent(v *Validator, users []*protocol.MemoryUser) {
 		e, _ := v.userCache.successCache.users.Load(u.Email)
 		e.(*successUserEntry).lastAccess = now - int64(i)*int64(time.Millisecond)
 	}
-	v.userCache.successCache.builtAt.Store(0) // 强制重建快照
+	v.userCache.successCache.builtAt.Store(0) // force a snapshot rebuild
 }
 
 func TestValidatorThrottledIPTriesFewRecentUsers(t *testing.T) {
@@ -191,8 +191,8 @@ func TestValidatorThrottledIPTriesFewRecentUsers(t *testing.T) {
 		common.Must(v.Add(testUser(i)))
 	}
 	fillRecent(v, v.users[:scanLimitedRecentUsers*2])
-	near := v.users[scanLimitedRecentUsers-1] // 最近的第 64 个
-	far := v.users[scanLimitedRecentUsers]    // 第 65 个
+	near := v.users[scanLimitedRecentUsers-1] // 64th most recent
+	far := v.users[scanLimitedRecentUsers]    // 65th
 
 	const badIP = "198.51.100.20"
 	expired := udpPacketFor(t, testUser(-1))

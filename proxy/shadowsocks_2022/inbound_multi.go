@@ -296,7 +296,7 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			sessionID := binary.BigEndian.Uint64(rawHeader[:8])
 			packetID := binary.BigEndian.Uint64(rawHeader[8:16])
 
-			// 会话 ID 来自未认证的包头，解密成功后才登记会话
+			// The session ID is not authenticated yet: store the session only after decryption.
 			sessionItem, stored := i.udpSessions.Lookup(sessionID)
 
 			if stored && !sessionItem.CheckPacketID(packetID) {

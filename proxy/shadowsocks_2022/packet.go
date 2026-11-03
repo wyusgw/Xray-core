@@ -239,7 +239,7 @@ func (c *UDPCodec) DecodePacket(data []byte) (DecodedUDPPacket, error) {
 	sessionID := binary.BigEndian.Uint64(rawHeader[:8])
 	packetID := binary.BigEndian.Uint64(rawHeader[8:16])
 
-	// AES 模式的会话 ID 来自未认证的包头，解密成功后才登记会话
+	// The session ID is not authenticated yet: store the session only after decryption.
 	sessionItem, stored := c.sessions.Lookup(sessionID)
 	if stored && !sessionItem.CheckPacketID(packetID) {
 		return DecodedUDPPacket{}, ErrPacketIdNotUnique

@@ -497,8 +497,8 @@ func TestClientUDPSessionMultiDestination(t *testing.T) {
 	}
 }
 
-// 未通过认证的 AES UDP 包不应在服务端登记会话，否则垃圾流量会让会话表
-// 持续增长直到超时清理。
+// An AES UDP packet that fails authentication must not store a session,
+// or junk traffic would grow the session table until sessions time out.
 func TestUDPSessionStoredOnlyAfterAuth(t *testing.T) {
 	method, err := GetCipherMethod(MethodAES128GCM)
 	common.Must(err)
@@ -518,7 +518,7 @@ func TestUDPSessionStoredOnlyAfterAuth(t *testing.T) {
 	common.Must(err)
 	defer forged.Release()
 	bad := forged.Bytes()
-	bad[len(bad)-1] ^= 0xff // 包头不变，认证失败
+	bad[len(bad)-1] ^= 0xff // keep the header, fail authentication
 	if _, err := serverCodec.DecodePacket(bad); err == nil {
 		t.Fatal("forged packet decoded")
 	}

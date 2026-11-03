@@ -5,32 +5,32 @@ import (
 	"time"
 )
 
-// 多用户 AEAD 握手在缓存未命中时只能逐个用户试解，成本与用户总数成正比。
-// 过期用户的客户端、扫描器每次连接都会触发一次全量扫描，用户多时会吃满
-// CPU。scanLimiter 给每个源 IP 一个令牌桶：只有失败的全量扫描消耗令牌，
-// 成功的不消耗，所以正常用户不受影响；令牌耗尽的 IP 在恢复前跳过全量扫描，
-// 只尝试 IP 缓存和最近成功的前 scanLimitedRecentUsers 个用户。
+// A multi-user AEAD request that misses the caches is matched by trying every
+// user, which costs time proportional to the number of users. Clients of
+// expired users and probes do this on every attempt. scanLimiter gives each
+// source IP a token bucket that only failed full scans spend, so working
+// clients are not affected. An IP without tokens skips the full scan and only
+// tries its cached users and the scanLimitedRecentUsers most recent users.
 const (
-	// scanLimitMinUsers 用户数低于这个值时全量扫描很便宜，不做限制
+	// Full scans are not limited below this many users.
 	scanLimitMinUsers = 256
 
-	// scanBurst 每个 IP 连续失败的全量扫描次数上限
+	// Failed full scans an IP can make in a row.
 	scanBurst = 8
-	// scanRefill 每隔多久恢复一个令牌
+	// Time to regain one full scan.
 	scanRefill = 2 * time.Second
 
-	// scanLimitedRecentUsers 被限速的IP最多试多少个最近成功用户
+	// Recent users tried by a throttled IP.
 	scanLimitedRecentUsers = 64
 
 	scanShards = 32
-	// scanShardCap 每个分片最多跟踪的 IP 数，32 个分片共约 13 万个，
-	// 每条约 100 字节，上限十几 MB
+	// IPs tracked per shard: at most about 130k IPs and 13 MB in total.
 	scanShardCap = 4096
 )
 
 type scanBucket struct {
 	tokens float64
-	last   int64 // UnixNano，tokens 对应的时间
+	last   int64 // UnixNano time of tokens
 }
 
 type scanShard struct {
@@ -59,7 +59,7 @@ func (l *scanLimiter) shard(key string) *scanShard {
 	return &l.shards[h%scanShards]
 }
 
-// refilled 返回 b 在 now 时刻的令牌数
+// refilled returns the tokens b has at now.
 func (b *scanBucket) refilled(now int64) float64 {
 	t := b.tokens + float64(now-b.last)/float64(scanRefill)
 	if t > scanBurst {
@@ -68,7 +68,7 @@ func (b *scanBucket) refilled(now int64) float64 {
 	return t
 }
 
-// Allow 报告 key 现在是否还能做一次全量扫描
+// Allow reports whether key may make a full scan now.
 func (l *scanLimiter) Allow(key string) bool {
 	if key == "" {
 		return true
@@ -83,7 +83,7 @@ func (l *scanLimiter) Allow(key string) bool {
 	return b.refilled(time.Now().UnixNano()) >= 1
 }
 
-// Fail 记录 key 的一次失败全量扫描
+// Fail records a failed full scan from key.
 func (l *scanLimiter) Fail(key string) {
 	if key == "" {
 		return
@@ -107,7 +107,7 @@ func (l *scanLimiter) Fail(key string) {
 	b.last = now
 }
 
-// Success 清除 key 的失败记录
+// Success forgets the failures of key.
 func (l *scanLimiter) Success(key string) {
 	if key == "" {
 		return
@@ -118,8 +118,9 @@ func (l *scanLimiter) Success(key string) {
 	s.mu.Unlock()
 }
 
-// evict 在分片满时腾出空间：先删已经恢复满的桶（等同于没有记录），
-// 都没恢复满就随机删一部分，保证内存有上限。调用者需持有锁。
+// evict makes room in a full shard. It drops buckets that have refilled,
+// which is the same as having no record, then random ones if needed.
+// It must be called with s.mu held.
 func (s *scanShard) evict(now int64) {
 	for k, b := range s.buckets {
 		if b.refilled(now) >= scanBurst {
