@@ -287,3 +287,22 @@ func TestFewUsersManyRetiredLimited(t *testing.T) {
 		t.Fatalf("user from another IP: user=%v err=%v", u, err)
 	}
 }
+
+// A removed user whose email is not lowercase must leave the cache.
+func TestDelMixedCaseEmailLeavesCache(t *testing.T) {
+	v := newTestValidator(t, 2)
+	u := testUser(100)
+	u.Email = "Mixed@Example.com"
+	common.Must(v.Add(u))
+	const ip = "192.0.2.70"
+	if got, err := udpGet(v, udpPacketFor(t, u), ip); err != nil || got != u {
+		t.Fatalf("user=%v err=%v", got, err)
+	}
+	common.Must(v.Del("mixed@example.com"))
+	if users := v.userCache.GetMultiUser(ip); len(users) != 0 {
+		t.Fatalf("IP cache still holds %v", users)
+	}
+	if _, ok := v.userCache.recent.users.Load(u.Email); ok {
+		t.Fatal("recent users still hold the removed user")
+	}
+}

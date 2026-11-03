@@ -179,10 +179,10 @@ func fillRecent(v *Validator, users []*protocol.MemoryUser) {
 	now := time.Now().UnixNano()
 	for i, u := range users {
 		v.userCache.PutWithSuccess(fmt.Sprintf("10.1.%d.%d", i>>8, i&255), u)
-		e, _ := v.userCache.successCache.users.Load(u.Email)
-		e.(*successUserEntry).lastAccess = now - int64(i)*int64(time.Millisecond)
+		e, _ := v.userCache.recent.users.Load(u.Email)
+		e.(*successUserEntry).lastAccess.Store(now - int64(i)*int64(time.Millisecond))
 	}
-	v.userCache.successCache.builtAt.Store(0) // force a snapshot rebuild
+	v.userCache.recent.builtAt.Store(0) // force a snapshot rebuild
 }
 
 func TestValidatorThrottledIPTriesFewRecentUsers(t *testing.T) {

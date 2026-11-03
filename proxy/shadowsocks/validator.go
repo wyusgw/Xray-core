@@ -166,7 +166,9 @@ func (v *Validator) Del(email string) error {
 	v.retire(user, time.Now())
 
 	if v.userCache != nil {
-		v.userCache.Remove(email)
+		// Cached users are keyed by their own email, which may not be
+		// lowercase.
+		v.userCache.Remove(user.Email)
 	}
 
 	return nil
@@ -236,7 +238,7 @@ func (v *Validator) UpdateUser(email string, newUser *protocol.MemoryUser) error
 	}
 
 	if v.userCache != nil {
-		v.userCache.Remove(email)
+		v.userCache.Remove(oldUser.Email)
 	}
 
 	return nil
