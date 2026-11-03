@@ -32,6 +32,7 @@ type Validator struct {
 	userCache  *UserCache                      // users keyed by source IP
 	scanLimit  *scanLimiter                    // limits failed full scans per source IP
 	retired    retiredUsers                    // keys of removed users
+	keyUsers   map[string]int                  // users per AEAD key
 
 	behaviorSeed  uint64
 	behaviorFused bool
@@ -46,6 +47,9 @@ func (v *Validator) initializeIfNeeded() {
 	}
 	if v.userPos == nil {
 		v.userPos = make(map[*protocol.MemoryUser]int)
+	}
+	if v.keyUsers == nil {
+		v.keyUsers = make(map[string]int)
 	}
 	if v.userCache == nil {
 		v.userCache = NewUserCache(2048)
@@ -69,6 +73,7 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 
 	v.userPos[u] = len(v.users)
 	v.users = append(v.users, u)
+	v.useKey(u, 1)
 	v.retired.remove(u)
 
 	if u.Email != "" {
@@ -99,6 +104,44 @@ func (v *Validator) removeAt(idx int) {
 	delete(v.userPos, removed)
 }
 
+// useKey counts users of the key of u. It must be called with the write lock
+// held.
+func (v *Validator) useKey(u *protocol.MemoryUser, delta int) {
+	key, ok := retiredKey(u)
+	if !ok {
+		return
+	}
+	if n := v.keyUsers[key] + delta; n > 0 {
+		v.keyUsers[key] = n
+	} else {
+		delete(v.keyUsers, key)
+	}
+}
+
+// retire records u as removed unless another user has the same key. It must
+// be called with the write lock held.
+func (v *Validator) retire(u *protocol.MemoryUser, now time.Time) {
+	if key, ok := retiredKey(u); ok && v.keyUsers[key] == 0 {
+		v.retired.add(u, now)
+	}
+}
+
+// Retire records users that were removed while they were not in v, such as
+// before the process started, so that their clients are recognized. Users
+// that are in v, or share a key with one, are skipped.
+func (v *Validator) Retire(users []*protocol.MemoryUser) {
+	v.Lock()
+	defer v.Unlock()
+	v.initializeIfNeeded()
+	now := time.Now()
+	for _, u := range users {
+		if u.Email != "" && v.emailIndex[strings.ToLower(u.Email)] != nil {
+			continue
+		}
+		v.retire(u, now)
+	}
+}
+
 // Del a Shadowsocks user with a non-empty Email.
 func (v *Validator) Del(email string) error {
 	if email == "" {
@@ -119,7 +162,8 @@ func (v *Validator) Del(email string) error {
 		v.removeAt(idx)
 	}
 	delete(v.emailIndex, email)
-	v.retired.add(user, time.Now())
+	v.useKey(user, -1)
+	v.retire(user, time.Now())
 
 	if v.userCache != nil {
 		v.userCache.Remove(email)
@@ -180,8 +224,10 @@ func (v *Validator) UpdateUser(email string, newUser *protocol.MemoryUser) error
 		delete(v.userPos, oldUser)
 		v.userPos[newUser] = idx
 	}
+	v.useKey(oldUser, -1)
+	v.useKey(newUser, 1)
 	// Clients still using the old key are like clients of a removed user.
-	v.retired.add(oldUser, time.Now())
+	v.retire(oldUser, time.Now())
 	v.retired.remove(newUser)
 
 	delete(v.emailIndex, email)

@@ -63,6 +63,14 @@ func (s *Server) RemoveUser(ctx context.Context, e string) error {
 	return s.validator.Del(e)
 }
 
+// RetireUsers records users that were removed before they could be removed
+// from s, for example while the process was not running. Requests from
+// their clients are then recognized and rejected cheaply instead of being
+// counted against the source IP.
+func (s *Server) RetireUsers(ctx context.Context, users []*protocol.MemoryUser) {
+	s.validator.Retire(users)
+}
+
 // GetUser implements proxy.UserManager.GetUser().
 func (s *Server) GetUser(ctx context.Context, email string) *protocol.MemoryUser {
 	return s.validator.GetByEmail(email)

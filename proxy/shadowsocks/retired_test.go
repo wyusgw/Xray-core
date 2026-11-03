@@ -220,3 +220,48 @@ func TestRetiredConcurrent(t *testing.T) {
 		<-done
 	}
 }
+
+func TestRetireRemovedBeforeStart(t *testing.T) {
+	v := newTestValidator(t, scanLimitMinUsers+1)
+	gone := testUser(-5) // removed while the process was not running
+	active := v.users[2]
+	v.Retire([]*protocol.MemoryUser{gone, active})
+
+	const relay = "192.0.2.90"
+	pkt := udpPacketFor(t, gone)
+	for i := 0; i < scanBurst*2; i++ {
+		if _, err := udpGet(v, pkt, relay); err != ErrNotFound {
+			t.Fatalf("removed user: err = %v", err)
+		}
+	}
+	if !v.scanLimit.Allow(relay) {
+		t.Fatal("clients of a retired user limited the IP")
+	}
+	if u, err := udpGet(v, udpPacketFor(t, active), relay); err != nil || u != active {
+		t.Fatalf("active user passed to Retire: user=%v err=%v", u, err)
+	}
+}
+
+func TestSharedKeyNotRetired(t *testing.T) {
+	v := newTestValidator(t, scanLimitMinUsers)
+	account, err := (&Account{Password: "shared", CipherType: CipherType_AES_128_GCM}).AsAccount()
+	common.Must(err)
+	a := &protocol.MemoryUser{Email: "a@example.com", Account: account}
+	b := &protocol.MemoryUser{Email: "b@example.com", Account: account}
+	common.Must(v.Add(a))
+	common.Must(v.Add(b))
+	common.Must(v.Del(a.Email))
+	v.Retire([]*protocol.MemoryUser{a})
+
+	pkt := udpPacketFor(t, b)
+	const ip = "192.0.2.91"
+	for i := 0; i < 3; i++ {
+		if u, err := udpGet(v, pkt, ip); err != nil || u != b {
+			t.Fatalf("user sharing a removed user's key: user=%v err=%v", u, err)
+		}
+	}
+	common.Must(v.Del(b.Email))
+	if !v.retired.contains(b) {
+		t.Fatal("last user of the key not retired")
+	}
+}
