@@ -296,9 +296,10 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			sessionID := binary.BigEndian.Uint64(rawHeader[:8])
 			packetID := binary.BigEndian.Uint64(rawHeader[8:16])
 
-			sessionItem := i.udpSessions.GetOrCreate(sessionID)
+			// 会话 ID 来自未认证的包头，解密成功后才登记会话
+			sessionItem, stored := i.udpSessions.Lookup(sessionID)
 
-			if !sessionItem.CheckPacketID(packetID) {
+			if stored && !sessionItem.CheckPacketID(packetID) {
 				b.Release()
 				continue
 			}
@@ -327,6 +328,9 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			b.Release()
 			if err != nil {
 				continue
+			}
+			if !stored {
+				sessionItem = i.udpSessions.Store(sessionItem, packetID)
 			}
 
 			sessionItem.Lock()

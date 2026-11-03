@@ -496,3 +496,47 @@ func TestClientUDPSessionMultiDestination(t *testing.T) {
 		})
 	}
 }
+
+// 未通过认证的 AES UDP 包不应在服务端登记会话，否则垃圾流量会让会话表
+// 持续增长直到超时清理。
+func TestUDPSessionStoredOnlyAfterAuth(t *testing.T) {
+	method, err := GetCipherMethod(MethodAES128GCM)
+	common.Must(err)
+	psk := make([]byte, method.KeySaltLength)
+	_, _ = rand.Read(psk)
+
+	clientCodec, err := NewUDPPacketCodec(method, [][]byte{psk})
+	common.Must(err)
+	serverCodec, err := NewUDPServerCodec(method, psk, time.Minute)
+	common.Must(err)
+
+	session, err := clientCodec.NewClientSession()
+	common.Must(err)
+	dest := net.UDPDestination(net.LocalHostIP, net.Port(53))
+
+	forged, err := session.EncodePacket(dest, []byte("payload"))
+	common.Must(err)
+	defer forged.Release()
+	bad := forged.Bytes()
+	bad[len(bad)-1] ^= 0xff // 包头不变，认证失败
+	if _, err := serverCodec.DecodePacket(bad); err == nil {
+		t.Fatal("forged packet decoded")
+	}
+	if _, stored := serverCodec.Sessions().Lookup(session.ClientSessionID()); stored {
+		t.Fatal("session stored for unauthenticated packet")
+	}
+
+	good, err := session.EncodePacket(dest, []byte("payload"))
+	common.Must(err)
+	defer good.Release()
+	raw := append([]byte(nil), good.Bytes()...)
+	if _, err := serverCodec.DecodePacket(good.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if _, stored := serverCodec.Sessions().Lookup(session.ClientSessionID()); !stored {
+		t.Fatal("session not stored after authenticated packet")
+	}
+	if _, err := serverCodec.DecodePacket(raw); err != ErrPacketIdNotUnique {
+		t.Fatalf("replay after first store: %v", err)
+	}
+}

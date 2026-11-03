@@ -147,13 +147,48 @@ func (m *UDPSessionManager) GetOrCreate(sessionID uint64) *ServerUDPSession {
 		return actual
 	}
 
+	m.maybeCleanup(now)
+	return s
+}
+
+// Lookup 返回 sessionID 对应的已存在会话；不存在时返回一个未登记的新会话
+// （stored 为 false）。会话 ID 来自未经认证的包头，调用者必须在包解密
+// 成功后才用 Store 登记，否则任意垃圾 UDP 包都会在表里留下一个会话，直到
+// 超时才清理。
+func (m *UDPSessionManager) Lookup(sessionID uint64) (s *ServerUDPSession, stored bool) {
+	now := time.Now().Unix()
+	if s, ok := m.sessions.Load(sessionID); ok {
+		s.LastActive.Store(now)
+		return s, true
+	}
+	s = &ServerUDPSession{
+		SessionID: sessionID,
+		manager:   m,
+	}
+	s.LastActive.Store(now)
+	return s, false
+}
+
+// Store 登记 Lookup 返回的未登记会话，packetID 是刚通过认证的包。并发登记
+// 同一会话时以先登记的为准，返回实际在表中的会话。
+func (m *UDPSessionManager) Store(s *ServerUDPSession, packetID uint64) *ServerUDPSession {
+	now := time.Now().Unix()
+	actual, loaded := m.sessions.LoadOrStore(s.SessionID, s)
+	if loaded {
+		actual.LastActive.Store(now)
+		actual.AddPacketID(packetID)
+		return actual
+	}
+	m.maybeCleanup(now)
+	return s
+}
+
+func (m *UDPSessionManager) maybeCleanup(now int64) {
 	// Trigger cleanup if at least 30 seconds have passed since last cleanup
 	last := m.lastClean.Load()
 	if now-last > 30 && m.lastClean.CompareAndSwap(last, now) {
 		go m.cleanup(now)
 	}
-
-	return s
 }
 
 func (m *UDPSessionManager) cleanup(now int64) {
