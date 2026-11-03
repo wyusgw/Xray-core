@@ -8,8 +8,8 @@ import (
 // 多用户 AEAD 握手在缓存未命中时只能逐个用户试解，成本与用户总数成正比。
 // 过期用户的客户端、扫描器每次连接都会触发一次全量扫描，用户多时会吃满
 // CPU。scanLimiter 给每个源 IP 一个令牌桶：只有失败的全量扫描消耗令牌，
-// 成功的不消耗，所以正常用户不受影响；令牌耗尽的 IP 在恢复前跳过全量扫描
-// （仍然会尝试 IP 缓存和最近成功用户，这两步成本很低）。
+// 成功的不消耗，所以正常用户不受影响；令牌耗尽的 IP 在恢复前跳过全量扫描，
+// 只尝试 IP 缓存和最近成功的前 scanLimitedRecentUsers 个用户。
 const (
 	// scanLimitMinUsers 用户数低于这个值时全量扫描很便宜，不做限制
 	scanLimitMinUsers = 256
@@ -18,6 +18,9 @@ const (
 	scanBurst = 8
 	// scanRefill 每隔多久恢复一个令牌
 	scanRefill = 2 * time.Second
+
+	// scanLimitedRecentUsers 被限速的IP最多试多少个最近成功用户
+	scanLimitedRecentUsers = 64
 
 	scanShards = 32
 	// scanShardCap 每个分片最多跟踪的 IP 数，32 个分片共约 13 万个，

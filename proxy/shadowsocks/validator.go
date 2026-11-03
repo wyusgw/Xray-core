@@ -207,7 +207,13 @@ func (v *Validator) GetWithCache(bs []byte, command protocol.RequestCommand, cac
 				return user, t.aead, t.ret, t.ivLen, nil
 			}
 		}
-		for _, entry := range v.userCache.RecentUsers() {
+		// 被限速的IP（最近的全量扫描都失败了）只试最近成功的前几个用户：
+		// 最近成功用户可能有上万个，全部试一遍的成本和全量扫描相当
+		recent := v.userCache.RecentUsers()
+		if len(recent) > scanLimitedRecentUsers && v.scanThrottled(cacheKey) {
+			recent = recent[:scanLimitedRecentUsers]
+		}
+		for _, entry := range recent {
 			if slices.Contains(ipUsers, entry.user) {
 				continue // 第一级已经试过
 			}
@@ -270,6 +276,13 @@ func (v *Validator) GetBehaviorSeed() uint64 {
 		v.behaviorSeed = rand.Uint64()
 	}
 	return v.behaviorSeed
+}
+
+// scanThrottled 报告 cacheKey 的全量扫描是否正被限速
+func (v *Validator) scanThrottled(cacheKey string) bool {
+	v.RLock()
+	defer v.RUnlock()
+	return v.scanLimit != nil && len(v.users) >= scanLimitMinUsers && !v.scanLimit.Allow(cacheKey)
 }
 
 // confirm 确认缓存命中的用户仍然有效，并在同一把读锁下更新缓存。Del 持有

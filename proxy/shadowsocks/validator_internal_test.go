@@ -173,3 +173,59 @@ func BenchmarkExpiredClientFullScan(b *testing.B) {
 		}
 	})
 }
+
+// fillRecent 让 users 成为最近成功用户，users[0] 最近
+func fillRecent(v *Validator, users []*protocol.MemoryUser) {
+	now := time.Now().UnixNano()
+	for i, u := range users {
+		v.userCache.PutWithSuccess(fmt.Sprintf("10.1.%d.%d", i>>8, i&255), u)
+		e, _ := v.userCache.successCache.users.Load(u.Email)
+		e.(*successUserEntry).lastAccess = now - int64(i)*int64(time.Millisecond)
+	}
+	v.userCache.successCache.builtAt.Store(0) // 强制重建快照
+}
+
+func TestValidatorThrottledIPTriesFewRecentUsers(t *testing.T) {
+	v := new(Validator)
+	for i := 0; i < scanLimitMinUsers*2; i++ {
+		common.Must(v.Add(testUser(i)))
+	}
+	fillRecent(v, v.users[:scanLimitedRecentUsers*2])
+	near := v.users[scanLimitedRecentUsers-1] // 最近的第 64 个
+	far := v.users[scanLimitedRecentUsers]    // 第 65 个
+
+	const badIP = "198.51.100.20"
+	expired := udpPacketFor(t, testUser(-1))
+	for i := 0; i < scanBurst; i++ {
+		v.GetWithCache(expired, protocol.RequestCommandUDP, badIP)
+	}
+	if !v.scanThrottled(badIP) {
+		t.Fatal("IP not throttled")
+	}
+
+	if u, _, _, _, err := v.GetWithCache(udpPacketFor(t, near), protocol.RequestCommandUDP, badIP); err != nil || u != near {
+		t.Fatalf("recent user within limit: user=%v err=%v", u, err)
+	}
+	if _, _, _, _, err := v.GetWithCache(udpPacketFor(t, far), protocol.RequestCommandUDP, badIP); err != ErrNotFound {
+		t.Fatalf("recent user beyond limit from throttled IP: err=%v", err)
+	}
+	if u, _, _, _, err := v.GetWithCache(udpPacketFor(t, far), protocol.RequestCommandUDP, "198.51.100.21"); err != nil || u != far {
+		t.Fatalf("recent user beyond limit from clean IP: user=%v err=%v", u, err)
+	}
+}
+
+func BenchmarkThrottledIPManyRecentUsers(b *testing.B) {
+	v := new(Validator)
+	for i := 0; i < 10000; i++ {
+		common.Must(v.Add(testUser(i)))
+	}
+	fillRecent(v, v.users)
+	pkt := udpPacketFor(&testing.T{}, testUser(-1))
+	for i := 0; i < scanBurst; i++ {
+		v.GetWithCache(pkt, protocol.RequestCommandUDP, "198.51.100.9")
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.GetWithCache(pkt, protocol.RequestCommandUDP, "198.51.100.9")
+	}
+}
