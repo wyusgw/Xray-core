@@ -170,7 +170,7 @@ func (i *Inbound) processUDP(ctx context.Context, conn stat.Connection, dispatch
 				sessionItem.Unlock()
 			}
 			link, err := sessionItem.EnsureLink(ctx, conn, decoded.Destination, dispatcher, i.policyManager, func(dest net.Destination, payload []byte) ([]byte, error) {
-				return i.udpCodec.EncodeServerPacket(decoded.SessionID, dest, payload)
+				return sessionItem.EncodeResponse(i.udpCodec.method, i.udpCodec.psk, dest, payload)
 			})
 			if err != nil {
 				continue

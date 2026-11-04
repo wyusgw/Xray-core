@@ -239,12 +239,20 @@ func (c *UDPCodec) DecodePacket(data []byte) (DecodedUDPPacket, error) {
 	sessionID := binary.BigEndian.Uint64(rawHeader[:8])
 	packetID := binary.BigEndian.Uint64(rawHeader[8:16])
 
-	sessionItem := c.sessions.GetOrCreate(sessionID)
-	if !sessionItem.CheckPacketID(packetID) {
+	// The session ID is not authenticated yet: store the session only after decryption.
+	sessionItem, stored := c.sessions.Lookup(sessionID)
+	if stored && !sessionItem.CheckPacketID(packetID) {
 		return DecodedUDPPacket{}, ErrPacketIdNotUnique
 	}
 
-	return sessionItem.DecryptAESPayload(c.method, c.psk, sessionID, packetID, rawHeader[:], data[16:])
+	decoded, err := sessionItem.DecryptAESPayload(c.method, c.psk, sessionID, packetID, rawHeader[:], data[16:])
+	if err != nil {
+		return DecodedUDPPacket{}, err
+	}
+	if !stored {
+		c.sessions.Store(sessionItem, packetID)
+	}
+	return decoded, nil
 }
 
 func (s *ServerUDPSession) DecryptAESPayload(method *CipherMethod, psk []byte, sessionID, packetID uint64, rawHeader, bodyCipher []byte) (DecodedUDPPacket, error) {

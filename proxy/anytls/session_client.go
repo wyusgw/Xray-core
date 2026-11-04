@@ -129,6 +129,7 @@ func (s *session) openStream(ctx context.Context, target net.Destination, link *
 	sid := s.nextSID.Add(1) - 1
 	st := newStream(sid, link)
 	st.isUDP = target.Network == net.Network_UDP
+	st.udpTarget = target
 	waitForSynAck := sid >= 2 && s.peerVersion >= 2
 	s.streamsMu.Lock()
 	s.streams[st.sid] = st

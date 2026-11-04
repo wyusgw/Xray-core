@@ -63,6 +63,14 @@ func (s *Server) RemoveUser(ctx context.Context, e string) error {
 	return s.validator.Del(e)
 }
 
+// RetireUsers records users that were removed before they could be removed
+// from s, for example while the process was not running. Requests from
+// their clients are then recognized and rejected cheaply instead of being
+// counted against the source IP.
+func (s *Server) RetireUsers(ctx context.Context, users []*protocol.MemoryUser) {
+	s.validator.Retire(users)
+}
+
 // GetUser implements proxy.UserManager.GetUser().
 func (s *Server) GetUser(ctx context.Context, email string) *protocol.MemoryUser {
 	return s.validator.GetByEmail(email)
@@ -102,7 +110,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 }
 
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
-	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
+	respond := func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
 		payload := packet.Payload
 		if request == nil {
@@ -127,8 +135,9 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 
 		conn.Write(data.Bytes())
 		data.Release()
-	})
-	defer udpServer.RemoveRay()
+	}
+	udpServer := udp.NewDispatcher(dispatcher, respond)
+	defer func() { udpServer.RemoveRay() }()
 
 	inbound := session.InboundFromContext(ctx)
 	var dest *net.Destination
@@ -144,8 +153,15 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			var data *buf.Buffer
 			var err error
 
+			if inbound.User != nil && !s.validator.Has(inbound.User) {
+				// The user was removed: end its session and take the packet
+				// as a new one, so that a user added back keeps working.
+				udpServer.RemoveRay()
+				udpServer = udp.NewDispatcher(dispatcher, respond)
+				inbound.User = nil
+			}
 			if inbound.User != nil {
-				// 已知会话用户，直接基于该用户解码，避免修改全局 validator
+				// The session user is known: decode with it, not the shared validator.
 				request, data, err = DecodeUDPPacketWithUser(inbound.User, payload)
 			} else {
 				request, data, err = DecodeUDPPacketWithCache(s.validator, payload, sourceIPKey(inbound))
@@ -241,6 +257,14 @@ func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dis
 	if err != nil {
 		return err
 	}
+	if !s.validator.Has(request.User) {
+		// The user was removed during the handshake. Checking after Dispatch
+		// means that closing the links of removed users right after removing
+		// them cannot miss this one.
+		common.Interrupt(link.Reader)
+		common.Interrupt(link.Writer)
+		return errors.New("user ", request.User.Email, " was removed")
+	}
 
 	responseDone := func() error {
 		defer timer.SetTimeout(sessionPolicy.Timeouts.UplinkOnly)
@@ -298,8 +322,9 @@ func init() {
 	}))
 }
 
-// sourceIPKey 返回用户缓存的键：客户端的IP，不含端口。同一客户端的每个
-// TCP 连接源端口都不同，带端口的键永远不会命中。
+// sourceIPKey returns the user cache key: the client IP without the port.
+// Every TCP connection of a client has a new source port, so a key with the
+// port would never match.
 func sourceIPKey(inbound *session.Inbound) string {
 	if inbound == nil || !inbound.Source.IsValid() {
 		return ""

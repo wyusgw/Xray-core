@@ -21,8 +21,8 @@ func (s *ServerUDPSession) UpdateConn(conn stat.Connection) {
 	if s.currentConn.Load() == nil {
 		s.currentConn.Store(conn)
 	}
-	if s.timer != nil {
-		s.timer.Update()
+	if timer := s.timer.Load(); timer != nil {
+		timer.Update()
 	}
 }
 
@@ -40,8 +40,8 @@ func (s *ServerUDPSession) WriteToClient(b []byte) error {
 }
 
 func (s *ServerUDPSession) Close() {
-	if s.timer != nil {
-		s.timer.SetTimeout(0)
+	if timer := s.timer.Load(); timer != nil {
+		timer.SetTimeout(0)
 	}
 	if link := s.link.Load(); link != nil {
 		common.Interrupt(link.Reader)
@@ -94,15 +94,18 @@ func (s *ServerUDPSession) EnsureLink(
 		return nil, err
 	}
 
-	s.link.Store(link)
 	sessionPolicy := policyManager.ForLevel(level)
-	s.timer = signal.CancelAfterInactivity(sessCtx, func() {
+	// Set the timer before the link: packets that find the link refresh the
+	// timer without taking the lock.
+	s.timer.Store(signal.CancelAfterInactivity(sessCtx, func() {
 		if s.manager != nil {
-			s.manager.Delete(s.SessionID)
+			// The session may have been replaced already: keep the new one.
+			s.manager.sessions.CompareAndDelete(s.SessionID, s)
 		}
 		s.Close()
 		cancel()
-	}, sessionPolicy.Timeouts.ConnectionIdle)
+	}, sessionPolicy.Timeouts.ConnectionIdle))
+	s.link.Store(link)
 
 	go handleUDPResponse(s, link, dest, responseEncoder)
 	return link, nil
@@ -119,8 +122,8 @@ func ResetTCPConn(conn net.Conn) {
 
 func handleUDPResponse(s *ServerUDPSession, link *transport.Link, fallbackDest net.Destination, encode func(dest net.Destination, payload []byte) ([]byte, error)) {
 	defer func() {
-		if s.timer != nil {
-			s.timer.SetTimeout(0)
+		if timer := s.timer.Load(); timer != nil {
+			timer.SetTimeout(0)
 		}
 	}()
 	for {
@@ -128,8 +131,8 @@ func handleUDPResponse(s *ServerUDPSession, link *transport.Link, fallbackDest n
 		if err != nil {
 			return
 		}
-		if s.timer != nil {
-			s.timer.Update()
+		if timer := s.timer.Load(); timer != nil {
+			timer.Update()
 		}
 		for i, rb := range resMb {
 			b := rb.Bytes()
