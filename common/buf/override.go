@@ -23,6 +23,16 @@ func (r *EndpointOverrideReader) ReadMultiBuffer() (MultiBuffer, error) {
 	return mb, err
 }
 
+// Interrupt implements common.Interruptible.
+func (r *EndpointOverrideReader) Interrupt() {
+	common.Interrupt(r.Reader)
+}
+
+// Close implements io.Closer.
+func (r *EndpointOverrideReader) Close() error {
+	return common.Close(r.Reader)
+}
+
 type EndpointOverrideWriter struct {
 	Writer
 	Dest         net.Address
@@ -38,24 +48,12 @@ func (w *EndpointOverrideWriter) WriteMultiBuffer(mb MultiBuffer) error {
 	return w.Writer.WriteMultiBuffer(mb)
 }
 
-// Close and Interrupt are forwarded so that closing the wrapped link still
-// reaches the reader or writer inside. Without them common.Close and
-// common.Interrupt are no-ops on these wrappers, and whatever the inner
-// reader or writer does on close (ending the stream, releasing resources)
-// never happens.
-
-func (r *EndpointOverrideReader) Interrupt() {
-	common.Interrupt(r.Reader)
-}
-
-func (r *EndpointOverrideReader) Close() error {
-	return common.Close(r.Reader)
-}
-
+// Interrupt implements common.Interruptible.
 func (w *EndpointOverrideWriter) Interrupt() {
 	common.Interrupt(w.Writer)
 }
 
+// Close implements io.Closer.
 func (w *EndpointOverrideWriter) Close() error {
 	return common.Close(w.Writer)
 }

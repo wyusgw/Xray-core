@@ -7,28 +7,45 @@ import (
 	. "github.com/xtls/xray-core/common/buf"
 )
 
-type closeProbe struct {
+type closeRecorder struct {
 	closed      bool
 	interrupted bool
 }
 
-func (p *closeProbe) ReadMultiBuffer() (MultiBuffer, error) { return nil, nil }
-func (p *closeProbe) WriteMultiBuffer(mb MultiBuffer) error { ReleaseMulti(mb); return nil }
-func (p *closeProbe) Close() error                          { p.closed = true; return nil }
-func (p *closeProbe) Interrupt()                            { p.interrupted = true }
+func (c *closeRecorder) ReadMultiBuffer() (MultiBuffer, error) {
+	return nil, nil
+}
 
-func TestEndpointOverrideForwardsClose(t *testing.T) {
-	w := &closeProbe{}
-	common.Close(&EndpointOverrideWriter{Writer: w})
-	common.Interrupt(&EndpointOverrideWriter{Writer: w})
-	if !w.closed || !w.interrupted {
-		t.Fatalf("writer: closed=%v interrupted=%v", w.closed, w.interrupted)
+func (c *closeRecorder) WriteMultiBuffer(mb MultiBuffer) error {
+	ReleaseMulti(mb)
+	return nil
+}
+
+func (c *closeRecorder) Close() error {
+	c.closed = true
+	return nil
+}
+
+func (c *closeRecorder) Interrupt() {
+	c.interrupted = true
+}
+
+func TestEndpointOverrideReaderClose(t *testing.T) {
+	inner := &closeRecorder{}
+	r := &EndpointOverrideReader{Reader: inner}
+	common.Close(r)
+	common.Interrupt(r)
+	if !inner.closed || !inner.interrupted {
+		t.Error("expected Close() and Interrupt() to reach the inner reader")
 	}
+}
 
-	r := &closeProbe{}
-	common.Close(&EndpointOverrideReader{Reader: r})
-	common.Interrupt(&EndpointOverrideReader{Reader: r})
-	if !r.closed || !r.interrupted {
-		t.Fatalf("reader: closed=%v interrupted=%v", r.closed, r.interrupted)
+func TestEndpointOverrideWriterClose(t *testing.T) {
+	inner := &closeRecorder{}
+	w := &EndpointOverrideWriter{Writer: inner}
+	common.Close(w)
+	common.Interrupt(w)
+	if !inner.closed || !inner.interrupted {
+		t.Error("expected Close() and Interrupt() to reach the inner writer")
 	}
 }
