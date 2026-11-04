@@ -110,7 +110,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 }
 
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
-	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
+	respond := func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
 		payload := packet.Payload
 		if request == nil {
@@ -135,8 +135,9 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 
 		conn.Write(data.Bytes())
 		data.Release()
-	})
-	defer udpServer.RemoveRay()
+	}
+	udpServer := udp.NewDispatcher(dispatcher, respond)
+	defer func() { udpServer.RemoveRay() }()
 
 	inbound := session.InboundFromContext(ctx)
 	var dest *net.Destination
@@ -152,6 +153,13 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			var data *buf.Buffer
 			var err error
 
+			if inbound.User != nil && !s.validator.Has(inbound.User) {
+				// The user was removed: end its session and take the packet
+				// as a new one, so that a user added back keeps working.
+				udpServer.RemoveRay()
+				udpServer = udp.NewDispatcher(dispatcher, respond)
+				inbound.User = nil
+			}
 			if inbound.User != nil {
 				// The session user is known: decode with it, not the shared validator.
 				request, data, err = DecodeUDPPacketWithUser(inbound.User, payload)
@@ -248,6 +256,14 @@ func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dis
 	link, err := dispatcher.Dispatch(ctx, dest)
 	if err != nil {
 		return err
+	}
+	if !s.validator.Has(request.User) {
+		// The user was removed during the handshake. Checking after Dispatch
+		// means that closing the links of removed users right after removing
+		// them cannot miss this one.
+		common.Interrupt(link.Reader)
+		common.Interrupt(link.Writer)
+		return errors.New("user ", request.User.Email, " was removed")
 	}
 
 	responseDone := func() error {

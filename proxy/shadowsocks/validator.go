@@ -189,6 +189,14 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 	return v.emailIndex[strings.ToLower(email)]
 }
 
+// Has reports whether u is a user of v, not removed or replaced.
+func (v *Validator) Has(u *protocol.MemoryUser) bool {
+	v.RLock()
+	defer v.RUnlock()
+	_, ok := v.userPos[u]
+	return ok
+}
+
 // GetAll get all users
 func (v *Validator) GetAll() []*protocol.MemoryUser {
 	v.RLock()

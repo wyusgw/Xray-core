@@ -260,6 +260,14 @@ func (i *MultiUserInbound) processTCP(ctx context.Context, conn net.Conn, dispat
 	if err != nil {
 		return err
 	}
+	if u, ok := i.usersByHash.Load(decryptedHash); !ok || u != user {
+		// The user was removed during the handshake. Checking after Dispatch
+		// means that closing the links of removed users right after removing
+		// them cannot miss this one.
+		common.Interrupt(link.Reader)
+		common.Interrupt(link.Writer)
+		return errors.New("user ", user.Email, " was removed")
+	}
 
 	if len(reqHeader.EarlyData) > 0 {
 		mb := buf.MergeBytes(nil, reqHeader.EarlyData)
