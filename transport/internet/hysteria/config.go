@@ -24,6 +24,7 @@ const (
 	maxDatagramFrame  = 1200
 	udpMessageChan    = 1024
 	authFailDelay     = 200 * time.Millisecond
+	closeCodeOK       = 0
 	closeCodeProtocol = 1
 	closeCodeAuth     = 2
 
