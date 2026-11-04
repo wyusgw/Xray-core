@@ -6,6 +6,7 @@ import (
 
 	"github.com/sagernet/sing/common/uot"
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/transport"
 )
 
@@ -24,6 +25,9 @@ type stream struct {
 	udpIsConnect bool
 	uotRequest   *uot.Request
 	uotInput     []byte
+	// udpTarget is where a client UDP stream sends to; replies on it come
+	// back from there.
+	udpTarget net.Destination
 }
 
 func newStream(sid uint32, link *transport.Link) *stream {
