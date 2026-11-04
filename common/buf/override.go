@@ -1,6 +1,7 @@
 package buf
 
 import (
+	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/net"
 )
 
@@ -35,4 +36,26 @@ func (w *EndpointOverrideWriter) WriteMultiBuffer(mb MultiBuffer) error {
 		}
 	}
 	return w.Writer.WriteMultiBuffer(mb)
+}
+
+// Close and Interrupt are forwarded so that closing the wrapped link still
+// reaches the reader or writer inside. Without them common.Close and
+// common.Interrupt are no-ops on these wrappers, and whatever the inner
+// reader or writer does on close (ending the stream, releasing resources)
+// never happens.
+
+func (r *EndpointOverrideReader) Interrupt() {
+	common.Interrupt(r.Reader)
+}
+
+func (r *EndpointOverrideReader) Close() error {
+	return common.Close(r.Reader)
+}
+
+func (w *EndpointOverrideWriter) Interrupt() {
+	common.Interrupt(w.Writer)
+}
+
+func (w *EndpointOverrideWriter) Close() error {
+	return common.Close(w.Writer)
 }
