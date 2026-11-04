@@ -99,7 +99,8 @@ func (s *ServerUDPSession) EnsureLink(
 	// timer without taking the lock.
 	s.timer.Store(signal.CancelAfterInactivity(sessCtx, func() {
 		if s.manager != nil {
-			s.manager.Delete(s.SessionID)
+			// The session may have been replaced already: keep the new one.
+			s.manager.sessions.CompareAndDelete(s.SessionID, s)
 		}
 		s.Close()
 		cancel()

@@ -304,16 +304,22 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 				continue
 			}
 
-			var userPSK []byte
-			var currentUser *protocol.MemoryUser
-			sessionItem.Lock()
-			currentUser = sessionItem.User
-			userPSK = sessionItem.UserPSK
-			sessionItem.Unlock()
+			currentUser, userPSK, userHash := sessionItem.sessionUser()
+			if currentUser != nil {
+				if u, ok := i.usersByHash.Load(userHash); !ok || u != currentUser {
+					// The user was removed: end its session now. Take the
+					// packet as the first of a new session, so that a user
+					// added back, for example with a new key, keeps working.
+					i.udpSessions.Remove(sessionItem)
+					sessionItem, stored = i.udpSessions.Lookup(sessionID)
+					currentUser, userPSK, userHash = sessionItem.sessionUser()
+				}
+			}
 
 			if currentUser == nil {
 				// Decrypt EIH
 				decryptedHash := DecryptUDPEIH(i.udpMasterCipher, rawHeader[:], packetBytes[16:32])
+				userHash = decryptedHash
 
 				user, ok := i.usersByHash.Load(decryptedHash)
 				if !ok {
@@ -337,6 +343,7 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			if sessionItem.User == nil {
 				sessionItem.User = currentUser
 				sessionItem.UserPSK = userPSK
+				sessionItem.userHash = userHash
 			}
 			sessionItem.Unlock()
 

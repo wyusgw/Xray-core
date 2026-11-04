@@ -83,6 +83,10 @@ type ServerUDPSession struct {
 	UserPSK    []byte
 	LastActive atomic.Int64 // Unix timestamp in seconds
 
+	// identity hash of User in multi-user inbounds, to check on every
+	// packet that User has not been removed
+	userHash [AESBlockSize]byte
+
 	clientBodyCipher cipher.AEAD
 
 	ServerSessionID   uint64
@@ -95,6 +99,12 @@ type ServerUDPSession struct {
 	link        atomic.Pointer[transport.Link]
 	timer       atomic.Pointer[signal.ActivityTimer]
 	currentConn atomic.Value // stores stat.Connection
+}
+
+func (s *ServerUDPSession) sessionUser() (*protocol.MemoryUser, []byte, [AESBlockSize]byte) {
+	s.Lock()
+	defer s.Unlock()
+	return s.User, s.UserPSK, s.userHash
 }
 
 func (s *ServerUDPSession) CheckPacketID(packetID uint64) bool {
@@ -200,7 +210,7 @@ func (m *UDPSessionManager) cleanup(now int64) {
 	}
 	m.sessions.Range(func(k uint64, v *ServerUDPSession) bool {
 		if now-v.LastActive.Load() > timeoutSec {
-			m.sessions.Delete(k)
+			m.sessions.CompareAndDelete(k, v)
 			v.Close()
 		}
 		return true
@@ -209,6 +219,13 @@ func (m *UDPSessionManager) cleanup(now int64) {
 
 func (m *UDPSessionManager) Delete(sessionID uint64) {
 	m.sessions.Delete(sessionID)
+}
+
+// Remove deletes s and closes it. A newer session stored under the same ID
+// is kept.
+func (m *UDPSessionManager) Remove(s *ServerUDPSession) {
+	m.sessions.CompareAndDelete(s.SessionID, s)
+	s.Close()
 }
 
 func (m *UDPSessionManager) EncodeServerPacket(method *CipherMethod, psk []byte, clientSessionID uint64, dest net.Destination, payload []byte) ([]byte, error) {
