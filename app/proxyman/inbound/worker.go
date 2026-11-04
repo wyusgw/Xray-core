@@ -292,6 +292,9 @@ type udpWorker struct {
 
 	checker    *task.Periodic
 	activeConn map[connID]*udpConn
+	// closed is set by Close, so a packet already being handled when the
+	// worker closes doesn't leave behind a connection nothing will close.
+	closed bool
 
 	ctx  context.Context
 	cone bool
@@ -325,7 +328,11 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 		uplink:   w.uplinkCounter,
 		downlink: w.downlinkCounter,
 	}
-	w.activeConn[id] = conn
+	if w.closed {
+		conn.Close()
+	} else {
+		w.activeConn[id] = conn
+	}
 
 	conn.updateActivity()
 	return conn, false
@@ -431,7 +438,10 @@ func (w *udpWorker) clean() error {
 }
 
 func (w *udpWorker) Start() error {
+	w.Lock()
 	w.activeConn = make(map[connID]*udpConn, 16)
+	w.closed = false
+	w.Unlock()
 	ctx := context.Background()
 	h, err := udp.ListenUDP(ctx, w.address, w.port, w.stream, udp.HubCapacity(256))
 	if err != nil {
@@ -466,6 +476,16 @@ func (w *udpWorker) Close() error {
 		if err := w.checker.Close(); err != nil {
 			errs = append(errs, err)
 		}
+	}
+
+	// The checker no longer runs, so close the remaining connections here.
+	// Their handlers otherwise wait on reads that never end, keeping their
+	// goroutines and buffers for good.
+	w.closed = true
+	for id, conn := range w.activeConn {
+		conn.setInactive()
+		conn.Close()
+		delete(w.activeConn, id)
 	}
 
 	if err := common.Close(w.proxy); err != nil {
