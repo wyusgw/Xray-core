@@ -200,7 +200,10 @@ type udpConn struct {
 	uplink           stats.Counter
 	downlink         stats.Counter
 	inactive         bool
-	cancel           context.CancelFunc
+	// ctx and cancel are set under the worker's lock when the connection
+	// is created, so Close can cancel it from another goroutine.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func (c *udpConn) setInactive() {
@@ -328,6 +331,7 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 		uplink:   w.uplinkCounter,
 		downlink: w.downlinkCounter,
 	}
+	conn.ctx, conn.cancel = context.WithCancel(w.ctx)
 	if w.closed {
 		conn.Close()
 	} else {
@@ -357,8 +361,7 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 		common.Must(w.checker.Start())
 
 		go func() {
-			ctx, cancel := context.WithCancel(w.ctx)
-			conn.cancel = cancel
+			ctx := conn.ctx
 			sid := session.NewID()
 			ctx = c.ContextWithID(ctx, sid)
 
