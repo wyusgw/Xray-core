@@ -341,7 +341,7 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			sessionItem.Unlock()
 
 			link, err := sessionItem.EnsureLink(ctx, conn, decoded.Destination, dispatcher, i.policyManager, func(replyDest net.Destination, payload []byte) ([]byte, error) {
-				return i.encodeServerUDPPacket(sessionID, userPSK, replyDest, payload)
+				return sessionItem.EncodeResponse(i.method, userPSK, replyDest, payload)
 			})
 			if err != nil {
 				continue
@@ -353,8 +353,4 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			_ = link.Writer.WriteMultiBuffer(buf.MultiBuffer{pBuf})
 		}
 	}
-}
-
-func (i *MultiUserInbound) encodeServerUDPPacket(clientSessionID uint64, userPSK []byte, dest net.Destination, payload []byte) ([]byte, error) {
-	return i.udpSessions.EncodeServerPacket(i.method, userPSK, clientSessionID, dest, payload)
 }

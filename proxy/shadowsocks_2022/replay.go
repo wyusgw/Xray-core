@@ -93,7 +93,7 @@ type ServerUDPSession struct {
 
 	manager     *UDPSessionManager
 	link        atomic.Pointer[transport.Link]
-	timer       *signal.ActivityTimer
+	timer       atomic.Pointer[signal.ActivityTimer]
 	currentConn atomic.Value // stores stat.Connection
 }
 
@@ -212,9 +212,15 @@ func (m *UDPSessionManager) Delete(sessionID uint64) {
 }
 
 func (m *UDPSessionManager) EncodeServerPacket(method *CipherMethod, psk []byte, clientSessionID uint64, dest net.Destination, payload []byte) ([]byte, error) {
-	sessionItem := m.GetOrCreate(clientSessionID)
-	if err := sessionItem.EnsureServerState(method, psk); err != nil {
+	return m.GetOrCreate(clientSessionID).EncodeResponse(method, psk, dest, payload)
+}
+
+// EncodeResponse encodes a server packet of s. Replies of a session must use
+// it rather than look the session up by ID: once the session has timed out
+// and been deleted, a lookup would store a new empty session.
+func (s *ServerUDPSession) EncodeResponse(method *CipherMethod, psk []byte, dest net.Destination, payload []byte) ([]byte, error) {
+	if err := s.EnsureServerState(method, psk); err != nil {
 		return nil, err
 	}
-	return sessionItem.EncodeServerPacket(method, clientSessionID, dest, payload)
+	return s.EncodeServerPacket(method, s.SessionID, dest, payload)
 }

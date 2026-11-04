@@ -540,3 +540,22 @@ func TestUDPSessionStoredOnlyAfterAuth(t *testing.T) {
 		t.Fatalf("replay after first store: %v", err)
 	}
 }
+
+// A reply that comes after its session timed out must not store a new empty
+// session, which nothing would close until the next cleanup.
+func TestUDPResponseAfterSessionDeleted(t *testing.T) {
+	method, err := GetCipherMethod(MethodAES128GCM)
+	common.Must(err)
+	psk := make([]byte, method.KeySaltLength)
+	_, _ = rand.Read(psk)
+
+	m := NewUDPSessionManager(time.Minute)
+	s := m.GetOrCreate(7)
+	m.Delete(7)
+	if _, err := s.EncodeResponse(method, psk, net.UDPDestination(net.LocalHostIP, net.Port(53)), []byte("reply")); err != nil {
+		t.Fatal(err)
+	}
+	if _, stored := m.Lookup(7); stored {
+		t.Fatal("reply stored a deleted session again")
+	}
+}
