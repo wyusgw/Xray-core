@@ -2,6 +2,8 @@ package mieru
 
 import (
 	"context"
+	stderrors "errors"
+	"io"
 	gonet "net"
 	"strings"
 	"sync"
@@ -33,6 +35,7 @@ type Listener struct {
 	manager UserManager
 	addr    net.Addr
 	cancel  context.CancelFunc
+	sockets *socketListener
 
 	closeOnce sync.Once
 }
@@ -50,7 +53,14 @@ func (l *Listener) Close() error {
 		if l.manager != nil {
 			l.manager.SetMieruUserObserver(nil)
 		}
-		err = l.mux.Close()
+		// Mux.Close closes the sessions one by one and waits up to a second
+		// on each for its close request to go out, so with many clients
+		// connected it takes minutes, and it only releases the port at the
+		// end. Free the port and drop the client connections now, so a
+		// reload can listen again at once and clients reconnect to it, and
+		// let the sessions close in the background.
+		err = l.sockets.closeAll()
+		go l.mux.Close()
 	})
 	return err
 }
@@ -117,6 +127,7 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 		manager: manager,
 		addr:    endpoint.LocalAddr(),
 		cancel:  cancel,
+		sockets: sockopt,
 	}
 
 	// This is what makes a panel-driven add or remove take effect without
@@ -186,6 +197,39 @@ func toMieruUsers(users []User) map[string]*appctlpb.User {
 type socketListener struct {
 	ctx      context.Context
 	settings *internet.SocketConfig
+
+	// open holds the sockets bound so far, so Close can release the port
+	// without waiting for the Mux.
+	mu   sync.Mutex
+	open []io.Closer
+	// conns holds the stream connections accepted so far, so Close can drop
+	// them at once: clients then see the server go away and reconnect,
+	// instead of opening new sessions on a Mux that is shutting down.
+	conns sync.Map // *ingressConn -> struct{}
+}
+
+func (l *socketListener) track(c io.Closer) {
+	l.mu.Lock()
+	l.open = append(l.open, c)
+	l.mu.Unlock()
+}
+
+func (l *socketListener) closeAll() error {
+	l.mu.Lock()
+	open := l.open
+	l.open = nil
+	l.mu.Unlock()
+	var errs []error
+	for _, c := range open {
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	l.conns.Range(func(k, _ any) bool {
+		k.(*ingressConn).Close()
+		return true
+	})
+	return stderrors.Join(errs...)
 }
 
 var (
@@ -202,7 +246,8 @@ func (l *socketListener) Listen(ctx context.Context, network, address string) (g
 	if err != nil {
 		return nil, err
 	}
-	return &ingressListener{Listener: listener}, nil
+	l.track(listener)
+	return &ingressListener{Listener: listener, conns: &l.conns}, nil
 }
 
 func (l *socketListener) ListenPacket(ctx context.Context, network, address string) (gonet.PacketConn, error) {
@@ -210,7 +255,12 @@ func (l *socketListener) ListenPacket(ctx context.Context, network, address stri
 	if err != nil {
 		return nil, err
 	}
-	return internet.ListenSystemPacket(l.contextOr(ctx), addr, l.settings)
+	conn, err := internet.ListenSystemPacket(l.contextOr(ctx), addr, l.settings)
+	if err != nil {
+		return nil, err
+	}
+	l.track(conn)
+	return conn, nil
 }
 
 // contextOr prefers the listener's context. mieru passes context.Background()

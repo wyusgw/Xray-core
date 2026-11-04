@@ -31,6 +31,9 @@ type ingressConn struct {
 	gonet.Conn
 	key     string
 	limiter atomic.Pointer[limiterBox]
+	// conns is the set of open connections of the listener that accepted
+	// this one.
+	conns *sync.Map
 }
 
 func (c *ingressConn) Read(b []byte) (int, error) {
@@ -45,11 +48,15 @@ func (c *ingressConn) Read(b []byte) (int, error) {
 
 func (c *ingressConn) Close() error {
 	ingressConns.CompareAndDelete(c.key, c)
+	if c.conns != nil {
+		c.conns.Delete(c)
+	}
 	return c.Conn.Close()
 }
 
 type ingressListener struct {
 	gonet.Listener
+	conns *sync.Map // *ingressConn -> struct{}
 }
 
 func (l *ingressListener) Accept() (gonet.Conn, error) {
@@ -58,10 +65,14 @@ func (l *ingressListener) Accept() (gonet.Conn, error) {
 		return nil, err
 	}
 	c := &ingressConn{
-		Conn: conn,
-		key:  conn.RemoteAddr().String(),
+		Conn:  conn,
+		key:   conn.RemoteAddr().String(),
+		conns: l.conns,
 	}
 	ingressConns.Store(c.key, c)
+	if l.conns != nil {
+		l.conns.Store(c, struct{}{})
+	}
 	return c, nil
 }
 
