@@ -31,6 +31,10 @@ type ingressConn struct {
 	gonet.Conn
 	key     string
 	limiter atomic.Pointer[limiterBox]
+	// paced is set once mieru reports decoded payload, which then replaces
+	// counting the bytes read, so headers and padding don't count against the
+	// limit. A mieru without that report keeps the limit on bytes read.
+	paced atomic.Bool
 	// conns is the set of open connections of the listener that accepted
 	// this one.
 	conns *sync.Map
@@ -38,12 +42,22 @@ type ingressConn struct {
 
 func (c *ingressConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
-	if n > 0 {
+	if n > 0 && !c.paced.Load() {
 		if box := c.limiter.Load(); box != nil {
 			box.limiter.Wait(int64(n))
 		}
 	}
 	return n, err
+}
+
+// PacePayload is called by mieru's read loop with the payload of each segment
+// it decoded. Waiting there still holds back the reads, so the client's TCP
+// send stays blocked.
+func (c *ingressConn) PacePayload(n int) {
+	c.paced.Store(true)
+	if box := c.limiter.Load(); box != nil {
+		box.limiter.Wait(int64(n))
+	}
 }
 
 func (c *ingressConn) Close() error {
