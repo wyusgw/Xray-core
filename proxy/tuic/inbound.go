@@ -30,6 +30,8 @@ func init() {
 
 type Inbound struct {
 	userMap sync.Map // uuid.UUID -> *protocol.MemoryUser
+	emails  sync.Map // email -> uuid.UUID, so removing a user does not scan all users
+	mu      sync.Mutex
 
 	config *ServerConfig
 }
@@ -51,7 +53,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Inbound, error) {
 		if !ok {
 			return nil, errors.New("invalid TUIC account")
 		}
-		inbound.userMap.Store(acc.UUID, memUser)
+		inbound.storeUser(acc.UUID, memUser)
 	}
 	return inbound, nil
 }
@@ -278,28 +280,46 @@ func (i *Inbound) parseTUICStreamDestination(conn net.Conn) (net.Destination, er
 
 func (i *Inbound) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
 	if acc, ok := u.Account.(*MemoryAccount); ok {
-		i.userMap.Store(acc.UUID, u)
+		i.mu.Lock()
+		i.storeUser(acc.UUID, u)
+		i.mu.Unlock()
 	}
 	return nil
+}
+
+// storeUser adds u, replacing the old UUID of a re-added email. The caller
+// holds i.mu, except in NewServer.
+func (i *Inbound) storeUser(id uuid.UUID, u *protocol.MemoryUser) {
+	if u.Email != "" {
+		if old, ok := i.emails.Load(u.Email); ok && old.(uuid.UUID) != id {
+			i.deleteUser(old.(uuid.UUID), u.Email)
+		}
+		i.emails.Store(u.Email, id)
+	}
+	i.userMap.Store(id, u)
+}
+
+// deleteUser removes id if it still belongs to email: a later AddUser may
+// have given the same UUID to another user.
+func (i *Inbound) deleteUser(id uuid.UUID, email string) bool {
+	value, ok := i.userMap.Load(id)
+	if !ok || value.(*protocol.MemoryUser).Email != email {
+		return false
+	}
+	i.userMap.Delete(id)
+	return true
 }
 
 func (i *Inbound) RemoveUser(ctx context.Context, email string) error {
 	if email == "" {
 		return errors.New("Email must not be empty")
 	}
-	var uuidToRemove uuid.UUID
-	i.userMap.Range(func(key, value any) bool {
-		u := value.(*protocol.MemoryUser)
-		if u.Email == email {
-			uuidToRemove = key.(uuid.UUID)
-			return false
-		}
-		return true
-	})
-	if uuidToRemove == (uuid.UUID{}) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	id, ok := i.emails.LoadAndDelete(email)
+	if !ok || !i.deleteUser(id.(uuid.UUID), email) {
 		return errors.New("User not found: ", email)
 	}
-	i.userMap.Delete(uuidToRemove)
 	return nil
 }
 
@@ -307,16 +327,15 @@ func (i *Inbound) GetUser(ctx context.Context, email string) *protocol.MemoryUse
 	if email == "" {
 		return nil
 	}
-	var found *protocol.MemoryUser
-	i.userMap.Range(func(key, value any) bool {
-		u := value.(*protocol.MemoryUser)
-		if u.Email == email {
-			found = u
-			return false
-		}
-		return true
-	})
-	return found
+	id, ok := i.emails.Load(email)
+	if !ok {
+		return nil
+	}
+	value, ok := i.userMap.Load(id)
+	if !ok || value.(*protocol.MemoryUser).Email != email {
+		return nil
+	}
+	return value.(*protocol.MemoryUser)
 }
 
 func (i *Inbound) GetUsers(ctx context.Context) []*protocol.MemoryUser {
