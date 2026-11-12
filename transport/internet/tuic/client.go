@@ -22,9 +22,6 @@ import (
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
 
-// ClientSettings carries the outbound side of a TUIC configuration. The
-// credentials live in the proxy config (`proxy/tuic`), while the QUIC
-// connection is owned by this transport, so the proxy hands them over here.
 type ClientSettings struct {
 	UUID              [16]byte
 	Password          string
@@ -34,9 +31,6 @@ type ClientSettings struct {
 	Heartbeat         time.Duration
 }
 
-// Client owns a single multiplexed QUIC connection to one TUIC server. Every
-// request of the owning outbound reuses it; the connection is re-dialed lazily
-// whenever the previous one died.
 type Client struct {
 	settings ClientSettings
 
@@ -69,8 +63,6 @@ func NewClient(settings ClientSettings) (*Client, error) {
 	}, nil
 }
 
-// Dial returns either a TUIC relay stream (TCP) or a TUIC UDP session,
-// depending on UDPFromContext.
 func (c *Client) Dial(ctx context.Context, dest xnet.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
 	quicConn, connCtx, err := c.connection(ctx, dest, streamSettings)
 	if err != nil {
@@ -183,9 +175,7 @@ func (c *Client) dialLocked(ctx context.Context, dest xnet.Destination, streamSe
 	c.cancel = cancel
 
 	if c.settings.ZeroRTTHandshake {
-		// 0-RTT hands out a usable connection before the handshake finishes, but
-		// the authentication token is derived from exported keying material, so
-		// it has to wait. The server queues pre-auth commands for us.
+		// The auth token comes from exported keying material, so it waits for the handshake.
 		go func() {
 			select {
 			case <-quicConn.HandshakeComplete():
@@ -289,9 +279,6 @@ func (c *Client) loopMessages(ctx context.Context, quicConn *quic.Conn) {
 	}
 }
 
-// loopHeartbeat keeps the UDP relay sessions alive on the server. TUIC only
-// requires it while at least one session exists, so an idle TCP-only
-// connection stays silent (QUIC keep-alive still covers the connection).
 func (c *Client) loopHeartbeat(ctx context.Context, quicConn *quic.Conn) {
 	ticker := time.NewTicker(c.settings.Heartbeat)
 	defer ticker.Stop()
@@ -342,8 +329,7 @@ func (c *Client) openUDPSession(ctx context.Context, quicConn *quic.Conn) *udpPa
 	return udpConn
 }
 
-// closeConnection tears the shared connection down, but only if it is still the
-// current one — a concurrent request may already have re-dialed.
+// closeConnection only closes quicConn if it is still current: a request may have re-dialed.
 func (c *Client) closeConnection(quicConn *quic.Conn) {
 	c.access.Lock()
 	defer c.access.Unlock()
@@ -393,8 +379,6 @@ func (c *Client) closeLocked() {
 	}
 }
 
-// WriteConnectHeader writes the `Connect` command of a TUIC relay stream. The
-// proxy owns it because only the proxy knows the request destination.
 func WriteConnectHeader(writer io.Writer, destination xnet.Destination) error {
 	if _, err := writer.Write([]byte{tuicVersion, commandConnect}); err != nil {
 		return err

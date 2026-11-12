@@ -83,6 +83,8 @@ type ServerUDPSession struct {
 	UserPSK    []byte
 	LastActive atomic.Int64 // Unix timestamp in seconds
 
+	userHash [AESBlockSize]byte
+
 	clientBodyCipher cipher.AEAD
 
 	ServerSessionID   uint64
@@ -93,8 +95,14 @@ type ServerUDPSession struct {
 
 	manager     *UDPSessionManager
 	link        atomic.Pointer[transport.Link]
-	timer       *signal.ActivityTimer
+	timer       atomic.Pointer[signal.ActivityTimer]
 	currentConn atomic.Value // stores stat.Connection
+}
+
+func (s *ServerUDPSession) sessionUser() (*protocol.MemoryUser, []byte, [AESBlockSize]byte) {
+	s.Lock()
+	defer s.Unlock()
+	return s.User, s.UserPSK, s.userHash
 }
 
 func (s *ServerUDPSession) CheckPacketID(packetID uint64) bool {
@@ -147,13 +155,44 @@ func (m *UDPSessionManager) GetOrCreate(sessionID uint64) *ServerUDPSession {
 		return actual
 	}
 
+	m.maybeCleanup(now)
+	return s
+}
+
+// The ID is unauthenticated: call Store only after the packet decrypts.
+func (m *UDPSessionManager) Lookup(sessionID uint64) (s *ServerUDPSession, stored bool) {
+	now := time.Now().Unix()
+	if s, ok := m.sessions.Load(sessionID); ok {
+		s.LastActive.Store(now)
+		return s, true
+	}
+	s = &ServerUDPSession{
+		SessionID: sessionID,
+		manager:   m,
+	}
+	s.LastActive.Store(now)
+	return s, false
+}
+
+// If stored concurrently, the stored session wins and is returned.
+func (m *UDPSessionManager) Store(s *ServerUDPSession, packetID uint64) *ServerUDPSession {
+	now := time.Now().Unix()
+	actual, loaded := m.sessions.LoadOrStore(s.SessionID, s)
+	if loaded {
+		actual.LastActive.Store(now)
+		actual.AddPacketID(packetID)
+		return actual
+	}
+	m.maybeCleanup(now)
+	return s
+}
+
+func (m *UDPSessionManager) maybeCleanup(now int64) {
 	// Trigger cleanup if at least 30 seconds have passed since last cleanup
 	last := m.lastClean.Load()
 	if now-last > 30 && m.lastClean.CompareAndSwap(last, now) {
 		go m.cleanup(now)
 	}
-
-	return s
 }
 
 func (m *UDPSessionManager) cleanup(now int64) {
@@ -163,7 +202,7 @@ func (m *UDPSessionManager) cleanup(now int64) {
 	}
 	m.sessions.Range(func(k uint64, v *ServerUDPSession) bool {
 		if now-v.LastActive.Load() > timeoutSec {
-			m.sessions.Delete(k)
+			m.sessions.CompareAndDelete(k, v)
 			v.Close()
 		}
 		return true
@@ -174,10 +213,19 @@ func (m *UDPSessionManager) Delete(sessionID uint64) {
 	m.sessions.Delete(sessionID)
 }
 
+func (m *UDPSessionManager) Remove(s *ServerUDPSession) {
+	m.sessions.CompareAndDelete(s.SessionID, s)
+	s.Close()
+}
+
 func (m *UDPSessionManager) EncodeServerPacket(method *CipherMethod, psk []byte, clientSessionID uint64, dest net.Destination, payload []byte) ([]byte, error) {
-	sessionItem := m.GetOrCreate(clientSessionID)
-	if err := sessionItem.EnsureServerState(method, psk); err != nil {
+	return m.GetOrCreate(clientSessionID).EncodeResponse(method, psk, dest, payload)
+}
+
+// Replies must use this, not a lookup by ID, which would store a new empty session.
+func (s *ServerUDPSession) EncodeResponse(method *CipherMethod, psk []byte, dest net.Destination, payload []byte) ([]byte, error) {
+	if err := s.EnsureServerState(method, psk); err != nil {
 		return nil, err
 	}
-	return sessionItem.EncodeServerPacket(method, clientSessionID, dest, payload)
+	return s.EncodeServerPacket(method, s.SessionID, dest, payload)
 }

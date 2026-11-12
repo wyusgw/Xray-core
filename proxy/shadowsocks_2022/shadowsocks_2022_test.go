@@ -21,6 +21,7 @@ import (
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
 	. "github.com/xtls/xray-core/proxy/shadowsocks_2022"
+	"github.com/xtls/xray-core/transport"
 )
 
 func newTestContext() context.Context {
@@ -495,4 +496,141 @@ func TestClientUDPSessionMultiDestination(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUDPSessionStoredOnlyAfterAuth(t *testing.T) {
+	method, err := GetCipherMethod(MethodAES128GCM)
+	common.Must(err)
+	psk := make([]byte, method.KeySaltLength)
+	_, _ = rand.Read(psk)
+
+	clientCodec, err := NewUDPPacketCodec(method, [][]byte{psk})
+	common.Must(err)
+	serverCodec, err := NewUDPServerCodec(method, psk, time.Minute)
+	common.Must(err)
+
+	session, err := clientCodec.NewClientSession()
+	common.Must(err)
+	dest := net.UDPDestination(net.LocalHostIP, net.Port(53))
+
+	forged, err := session.EncodePacket(dest, []byte("payload"))
+	common.Must(err)
+	defer forged.Release()
+	bad := forged.Bytes()
+	bad[len(bad)-1] ^= 0xff // keep the header, fail authentication
+	if _, err := serverCodec.DecodePacket(bad); err == nil {
+		t.Fatal("forged packet decoded")
+	}
+	if _, stored := serverCodec.Sessions().Lookup(session.ClientSessionID()); stored {
+		t.Fatal("session stored for unauthenticated packet")
+	}
+
+	good, err := session.EncodePacket(dest, []byte("payload"))
+	common.Must(err)
+	defer good.Release()
+	raw := append([]byte(nil), good.Bytes()...)
+	if _, err := serverCodec.DecodePacket(good.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if _, stored := serverCodec.Sessions().Lookup(session.ClientSessionID()); !stored {
+		t.Fatal("session not stored after authenticated packet")
+	}
+	if _, err := serverCodec.DecodePacket(raw); err != ErrPacketIdNotUnique {
+		t.Fatalf("replay after first store: %v", err)
+	}
+}
+
+func TestUDPResponseAfterSessionDeleted(t *testing.T) {
+	method, err := GetCipherMethod(MethodAES128GCM)
+	common.Must(err)
+	psk := make([]byte, method.KeySaltLength)
+	_, _ = rand.Read(psk)
+
+	m := NewUDPSessionManager(time.Minute)
+	s := m.GetOrCreate(7)
+	m.Delete(7)
+	if _, err := s.EncodeResponse(method, psk, net.UDPDestination(net.LocalHostIP, net.Port(53)), []byte("reply")); err != nil {
+		t.Fatal(err)
+	}
+	if _, stored := m.Lookup(7); stored {
+		t.Fatal("reply stored a deleted session again")
+	}
+}
+
+func TestMultiUserUDPSessionEndsOnRemove(t *testing.T) {
+	method, err := GetCipherMethod(MethodAES128GCM)
+	common.Must(err)
+	masterKey := make([]byte, method.KeySaltLength)
+	userKey := make([]byte, method.KeySaltLength)
+	_, _ = rand.Read(masterKey)
+	_, _ = rand.Read(userKey)
+
+	inbound, err := NewMultiServer(newTestContext(), &MultiUserServerConfig{
+		Method: MethodAES128GCM,
+		Key:    base64.StdEncoding.EncodeToString(masterKey),
+	})
+	common.Must(err)
+	newUser := func() *protocol.MemoryUser {
+		return &protocol.MemoryUser{Email: "user@example.com", Account: &MemoryAccount{Key: userKey}}
+	}
+	common.Must(inbound.AddUser(context.Background(), newUser()))
+
+	var mu sync.Mutex
+	var dispatched, received int
+	disp := &dummyDispatcher{
+		onDispatch: func(ctx context.Context, d net.Destination) (*transport.Link, error) {
+			r, w := gonet.Pipe()
+			t.Cleanup(func() { r.Close(); w.Close() })
+			mu.Lock()
+			dispatched++
+			mu.Unlock()
+			return &transport.Link{Reader: buf.NewReader(r), Writer: &customWriter{write: func(mb buf.MultiBuffer) error {
+				mu.Lock()
+				received += len(mb)
+				mu.Unlock()
+				buf.ReleaseMulti(mb)
+				return nil
+			}}}, nil
+		},
+	}
+	clientConn, serverConn := gonet.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	ctx, cancel := context.WithCancel(newTestContext())
+	defer cancel()
+	go func() { _ = inbound.Process(ctx, net.Network_UDP, &dummyStatConn{Conn: serverConn}, disp) }()
+
+	codec, err := NewUDPPacketCodec(method, [][]byte{masterKey, userKey})
+	common.Must(err)
+	session, err := codec.NewClientSession()
+	common.Must(err)
+	send := func() {
+		t.Helper()
+		pkt, err := session.EncodePacket(net.UDPDestination(net.LocalHostIP, net.Port(53)), []byte("payload"))
+		common.Must(err)
+		defer pkt.Release()
+		if _, err := clientConn.Write(pkt.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	check := func(step string, wantDispatched, wantReceived int) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if dispatched != wantDispatched || received != wantReceived {
+			t.Fatalf("%s: dispatched=%d received=%d, want %d and %d", step, dispatched, received, wantDispatched, wantReceived)
+		}
+	}
+
+	send()
+	check("before removal", 1, 1)
+
+	common.Must(inbound.RemoveUser(context.Background(), "user@example.com"))
+	send()
+	check("after removal", 1, 1)
+
+	common.Must(inbound.AddUser(context.Background(), newUser()))
+	send()
+	check("after adding back", 2, 2)
 }

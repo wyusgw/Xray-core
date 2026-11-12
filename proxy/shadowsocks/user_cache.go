@@ -11,118 +11,69 @@ import (
 )
 
 const (
-	// 第二级缓存策略：无上限设计
-	// 业务场景优化：总用户10K-300K，同时在线100-2K
-	//
-	// 无上限设计原理：
-	// - 只保存成功验证的用户，数量 ≤ 同时在线用户数
-	// - 最坏情况：2K用户 × 16字节 = 32KB内存（极其轻量）
-	// - 性能最优：O(实际在线数) vs O(总用户数)，提升5-150倍
-	// - 避免LRU淘汰：确保所有活跃用户都能命中第二级缓存
-	maxSuccessUsers = 0 // 0表示无上限
+	relayDetectionThreshold = 6
 
-	// 中转检测阈值：同IP用户数超过此值时，认为是中转场景，禁用该IP的第一级缓存
-	//
-	// 阈值选择分析：
-	// - 4用户：保守，覆盖小家庭（1-3人），快速检测中转，可能误判大家庭
-	// - 6用户：推荐，覆盖大多数家庭（1-5人），平衡性能和准确性
-	// - 8用户：宽松，覆盖几乎所有家庭场景，中转检测稍慢
-	// - 10用户：兼容，最大容错，但前期性能损失较大
-	//
-	// 推荐值：6（平衡最优）
-	relayDetectionThreshold = 6 // 超过6用户认为是中转，禁用第一级缓存和攻击防御
-
-	// successUserTTL 第二级缓存条目的存活时间：超过这么久没有成功握手的用户
-	// 会被移出第二级缓存，避免它随运行时间增长成全量用户列表。
 	successUserTTL = 30 * time.Minute
 
-	// recentRebuildInterval 第二级缓存按最近成功时间排序的快照多久重建一次。
 	recentRebuildInterval = time.Second
-) // UserCache 两级用户缓存系统，专门优化IP变化场景
-// 设计思路：
-// 1. 第一级缓存：IP → 用户（处理固定IP场景，O(1)查找）
-// 2. 第二级缓存：成功用户列表（处理IP变化场景，O(k)遍历，k<<n）
-// 3. 查找顺序：IP缓存 → 成功用户缓存 → 全量扫描
-//
-// 性能提升：
-// - IP固定场景：O(1) 直接命中第一级缓存
-// - IP变化场景：O(k) 遍历第二级缓存，k通常为几十个活跃用户，远小于总用户数n
-// - 最坏情况：O(n) 全量扫描（与原方案相同）
-type UserCache struct {
-	// 第一级缓存：IP地址到用户的直接映射
-	ipShards [32]*userCacheShard // 32个分片，降低锁竞争
 
-	// 第二级缓存：最近成功验证的用户列表（不依赖IP）
-	successCache *successUserCache
+	lruUpdateInterval = 5 * time.Second
+
+	userCacheShards = 32
+)
+
+type UserCache struct {
+	ipShards [userCacheShards]*userCacheShard
+	recent   recentUsers
 }
 
-// successUserCache 成功用户缓存（第二级）- 使用 sync.Map 优化并发性能
-type successUserCache struct {
-	users sync.Map // key: email (string), value: *successUserEntry
-	cap   int      // 容量限制（0表示无上限）
+type recentUsers struct {
+	users sync.Map // email -> *successUserEntry
 
-	// recent 是 users 按最近成功时间从新到旧排序的快照，最多每
-	// recentRebuildInterval 重建一次，查找时无锁遍历。
-	recent     atomic.Pointer[[]*successUserEntry]
+	sorted     atomic.Pointer[[]*successUserEntry]
 	builtAt    atomic.Int64
 	rebuilding atomic.Bool
 }
 
-// successUserEntry 成功用户条目。user 创建后不再修改（用户对象变化时整个
-// 条目被替换），只有 lastAccess 会被并发更新。
 type successUserEntry struct {
 	user       *protocol.MemoryUser
-	lastAccess int64 // 最后访问时间（原子操作）
+	lastAccess atomic.Int64 // UnixNano time of the last match
 }
 
-// userCacheShard 单个缓存分片（支持同IP多用户）
 type userCacheShard struct {
 	mu    sync.RWMutex
-	cache map[string]*cacheEntry // key: 客户端IP
-	list  *cacheList             // LRU双向链表
-	cap   int                    // 每个分片的容量
+	cache map[string]*cacheEntry // client IP -> entry
+	list  *cacheList
+	cap   int
 }
 
-// cacheEntry 缓存条目（支持同IP多用户+中转检测）
 type cacheEntry struct {
-	users      []*protocol.MemoryUser // 同IP的多个用户
+	users      []*protocol.MemoryUser
 	node       *cacheNode
-	lastAccess int64 // 最后访问时间（Unix纳秒）
-	isRelay    bool  // 是否为中转环境（检测到后禁用第一级缓存和攻击防御）
+	lastAccess int64 // UnixNano time of the last LRU update
+	isRelay    bool
 }
 
-// cacheNode LRU链表节点
 type cacheNode struct {
 	key  string
 	prev *cacheNode
 	next *cacheNode
 }
 
-// cacheList LRU双向链表
 type cacheList struct {
-	head *cacheNode // 虚拟头节点
-	tail *cacheNode // 虚拟尾节点
+	head *cacheNode
+	tail *cacheNode
 	size int
 }
 
-// NewUserCache 创建用户缓存
-// capacity: 总缓存容量，会均匀分配到32个分片
 func NewUserCache(capacity int) *UserCache {
 	if capacity <= 0 {
 		capacity = 16384
 	}
+	shardCap := max(8, capacity/userCacheShards)
 
-	shardCap := capacity / 32
-	if shardCap < 8 {
-		shardCap = 8 // 每个分片至少缓存8个用户（提升至8）
-	}
-
-	c := &UserCache{
-		successCache: &successUserCache{
-			cap: maxSuccessUsers, // 0表示无上限
-		},
-	}
-	for i := 0; i < 32; i++ {
+	c := &UserCache{}
+	for i := range c.ipShards {
 		c.ipShards[i] = &userCacheShard{
 			cache: make(map[string]*cacheEntry, shardCap),
 			list:  newCacheList(),
@@ -132,209 +83,107 @@ func NewUserCache(capacity int) *UserCache {
 	return c
 }
 
-// Get 从缓存获取用户
-func (c *UserCache) Get(key string) *protocol.MemoryUser {
-	shard := c.getShard(key)
-	return shard.get(key)
-}
-
-// Put 将用户放入缓存
-func (c *UserCache) Put(key string, user *protocol.MemoryUser) {
-	shard := c.getShard(key)
-	shard.put(key, user)
-}
-
-// GetMultiUser 获取同IP的多个用户（新方法）
 func (c *UserCache) GetMultiUser(key string) []*protocol.MemoryUser {
-	shard := c.getShard(key)
-	return shard.getMultiUser(key)
+	return c.getShard(key).getMultiUser(key)
 }
 
-// PutMultiUser 智能放入用户：支持同IP多用户+中转检测（新方法）
-func (c *UserCache) PutMultiUser(key string, user *protocol.MemoryUser) {
-	shard := c.getShard(key)
-	shard.putMultiUser(key, user)
+func (c *UserCache) PutWithSuccess(key string, user *protocol.MemoryUser) {
+	c.getShard(key).putMultiUser(key, user)
+	c.recent.add(user)
 }
 
-// Remove 从缓存中移除指定email的用户
 func (c *UserCache) Remove(email string) {
-	// 1. 从第一级缓存（IP分片）中移除
-	for i := 0; i < 32; i++ {
-		c.ipShards[i].removeByEmail(email)
+	if email == "" {
+		return
 	}
-
-	// 2. 从第二级缓存（成功用户）中移除 - sync.Map 是无锁操作
-	if email != "" {
-		c.successCache.users.Delete(email)
+	for _, s := range c.ipShards {
+		s.removeByEmail(email)
 	}
+	c.recent.users.Delete(email)
 }
 
-// Clear 清空所有缓存
-func (c *UserCache) Clear() {
-	for i := 0; i < 32; i++ {
-		c.ipShards[i].clear()
-	}
-
-	// 清空第二级缓存 - sync.Map 使用 Range + Delete
-	c.successCache.users.Range(func(key, value interface{}) bool {
-		c.successCache.users.Delete(key)
-		return true
-	})
-	c.successCache.recent.Store(nil)
+// The snapshot is shared and lags; callers must not modify it and must recheck users.
+func (c *UserCache) RecentUsers() []*successUserEntry {
+	return c.recent.snapshot()
 }
 
-// getShard 根据key计算分片索引（使用简单的字符串hash）
 func (c *UserCache) getShard(key string) *userCacheShard {
 	hash := uint32(0)
 	for i := 0; i < len(key); i++ {
 		hash = hash*31 + uint32(key[i])
 	}
-	return c.ipShards[hash%32]
+	return c.ipShards[hash%userCacheShards]
 }
 
-// get 从分片获取用户（优化：延迟LRU更新）
-func (s *userCacheShard) get(key string) *protocol.MemoryUser {
-	s.mu.RLock()
-	entry, ok := s.cache[key]
-	var lastAccess int64
-	if ok {
-		lastAccess = entry.lastAccess // 在锁内读取，putMultiUser 会在写锁下修改
-	}
-	s.mu.RUnlock()
-
-	if !ok {
-		return nil
-	}
-
-	// 优化：更加宽松的延迟LRU更新策略
-	// 原逻辑：1秒更新一次
-	// 新逻辑：5秒更新一次，进一步减少写锁竞争
-	//
-	// 性能收益：
-	// - 高频访问用户（每秒>200次）：写锁竞争降低80%
-	// - 连接稳定性：减少LRU操作导致的短暂阻塞
-	// - 整体性能：缓存命中延迟从35ns降至~25ns
-	now := time.Now().UnixNano()
-
-	// 如果超过5秒未更新LRU，才执行更新
-	if now-lastAccess > 5e9 { // 5e9纳秒 = 5秒
-		s.mu.Lock()
-		// 双重检查：其他goroutine可能已经更新过了
-		if now-entry.lastAccess > 5e9 {
-			s.list.moveToFront(entry.node)
-			entry.lastAccess = now
-		}
-		s.mu.Unlock()
-	}
-
-	return nil // 兼容旧接口，返回nil（已废弃，使用GetMultiUser代替）
-}
-
-// getMultiUser 获取同IP的多个用户（新方法）
 func (s *userCacheShard) getMultiUser(key string) []*protocol.MemoryUser {
 	s.mu.RLock()
 	entry, ok := s.cache[key]
-	if !ok {
+	if !ok || entry.isRelay {
 		s.mu.RUnlock()
 		return nil
 	}
-
-	// 检查是否为中转环境
-	if entry.isRelay {
-		s.mu.RUnlock()
-		return nil
-	}
-
-	users := make([]*protocol.MemoryUser, len(entry.users))
-	copy(users, entry.users)
-	lastAccess := entry.lastAccess // 在锁内读取，putMultiUser 会在写锁下修改
+	users := slices.Clone(entry.users)
+	lastAccess := entry.lastAccess
 	s.mu.RUnlock()
 
-	// 延迟LRU更新（减少锁竞争）
 	now := time.Now().UnixNano()
-	if now-lastAccess > 5e9 { // 5秒
+	if now-lastAccess > int64(lruUpdateInterval) {
 		s.mu.Lock()
-		// 双重检查：其他goroutine可能已经更新过了
-		if now-entry.lastAccess > 5e9 {
+		// Recheck after relocking: moving an evicted node would corrupt the list.
+		if s.cache[key] == entry && now-entry.lastAccess > int64(lruUpdateInterval) {
 			s.list.moveToFront(entry.node)
 			entry.lastAccess = now
 		}
 		s.mu.Unlock()
 	}
-
 	return users
 }
 
-// put 将用户放入分片缓存（兼容旧接口，已废弃）
-func (s *userCacheShard) put(key string, user *protocol.MemoryUser) {
-	s.putMultiUser(key, user)
-}
-
-// putMultiUser 智能放入用户：支持同IP多用户+中转检测
 func (s *userCacheShard) putMultiUser(key string, user *protocol.MemoryUser) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now().UnixNano()
 
-	// 如果已存在，检查用户是否已在列表中
 	if entry, ok := s.cache[key]; ok {
-		// 检查是否为中转环境
 		if entry.isRelay {
-			return // 已标记为中转，不再缓存
+			return
 		}
-
-		// 检查用户是否已存在
-		for i, existUser := range entry.users {
-			if existUser.Email != "" && existUser.Email == user.Email {
-				// 用户已存在，更新位置和时间
+		entry.lastAccess = now
+		s.list.moveToFront(entry.node)
+		for i, u := range entry.users {
+			if u.Email != "" && u.Email == user.Email {
 				entry.users[i] = user
-				entry.lastAccess = time.Now().UnixNano()
-				s.list.moveToFront(entry.node)
 				return
 			}
 		}
-
-		// 新用户，添加到列表
 		entry.users = append(entry.users, user)
-		entry.lastAccess = time.Now().UnixNano()
-		s.list.moveToFront(entry.node)
-
-		// 中转检测：用户数过多时标记为中转环境
 		if len(entry.users) > relayDetectionThreshold {
 			entry.isRelay = true
-			entry.users = nil // 释放内存
+			entry.users = nil
 		}
 		return
 	}
 
-	// 新条目：检查缓存容量
 	if s.list.size >= s.cap {
-		tail := s.list.removeTail()
-		if tail != nil {
+		if tail := s.list.removeTail(); tail != nil {
 			delete(s.cache, tail.key)
 		}
 	}
-
-	// 添加新条目到头部
-	node := s.list.addToFront(key)
 	s.cache[key] = &cacheEntry{
 		users:      []*protocol.MemoryUser{user},
-		node:       node,
-		lastAccess: time.Now().UnixNano(),
+		node:       s.list.addToFront(key),
+		lastAccess: now,
 	}
 }
 
-// removeByEmail 从分片中移除指定email的用户
 func (s *userCacheShard) removeByEmail(email string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 同一用户可能缓存在多个IP下，必须全部移除，否则已删除的用户仍能
-	// 通过残留条目通过验证
 	for key, entry := range s.cache {
 		entry.users = slices.DeleteFunc(entry.users, func(u *protocol.MemoryUser) bool {
 			return u.Email == email
 		})
-		// 如果用户列表为空，移除整个条目（中转条目本来就没有用户，保留其标记）
 		if len(entry.users) == 0 && !entry.isRelay {
 			s.list.remove(entry.node)
 			delete(s.cache, key)
@@ -342,125 +191,38 @@ func (s *userCacheShard) removeByEmail(email string) {
 	}
 }
 
-// clear 清空分片缓存
-func (s *userCacheShard) clear() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.cache = make(map[string]*cacheEntry, s.cap)
-	s.list = newCacheList()
-}
-
-// newCacheList 创建新的LRU链表
-func newCacheList() *cacheList {
-	head := &cacheNode{}
-	tail := &cacheNode{}
-	head.next = tail
-	tail.prev = head
-	return &cacheList{
-		head: head,
-		tail: tail,
-		size: 0,
-	}
-}
-
-// addToFront 在链表头部添加节点
-func (l *cacheList) addToFront(key string) *cacheNode {
-	node := &cacheNode{key: key}
-	node.next = l.head.next
-	node.prev = l.head
-	l.head.next.prev = node
-	l.head.next = node
-	l.size++
-	return node
-}
-
-// remove 从链表中移除节点
-func (l *cacheList) remove(node *cacheNode) {
-	if node == nil || node == l.head || node == l.tail {
+func (r *recentUsers) add(user *protocol.MemoryUser) {
+	if user.Email == "" {
 		return
 	}
-	node.prev.next = node.next
-	node.next.prev = node.prev
-	l.size--
-}
-
-// removeTail 移除并返回尾部节点
-func (l *cacheList) removeTail() *cacheNode {
-	if l.size == 0 {
-		return nil
-	}
-	node := l.tail.prev
-	l.remove(node)
-	return node
-}
-
-// moveToFront 将节点移到链表头部
-func (l *cacheList) moveToFront(node *cacheNode) {
-	if node == nil || node == l.head.next {
-		return
-	}
-	l.remove(node)
-	node.next = l.head.next
-	node.prev = l.head
-	l.head.next.prev = node
-	l.head.next = node
-	l.size++
-}
-
-// GetWithFallback 智能两级缓存查找：支持同IP多用户+中转检测
-// 返回: (ipCacheUsers, useSecondCache, isRelay)
-// - ipCacheUsers: 第一级缓存（IP匹配的用户列表）
-// - useSecondCache: 是否需要使用第二级缓存（sync.Map）
-// - isRelay: 是否为中转环境
-func (c *UserCache) GetWithFallback(key string) ([]*protocol.MemoryUser, bool, bool) {
-	// 检查是否为中转环境
-	shard := c.getShard(key)
-	shard.mu.RLock()
-	entry, ok := shard.cache[key]
-	isRelay := ok && entry.isRelay
-	shard.mu.RUnlock()
-
-	// 如果是中转环境，直接使用第二级缓存
-	if isRelay {
-		return nil, true, true
-	}
-
-	// 尝试第一级多用户缓存
-	if users := c.GetMultiUser(key); len(users) > 0 {
-		return users, false, false // 返回同IP的所有用户供验证
-	}
-
-	// 第一级缓存miss，使用第二级缓存
-	return nil, true, false
-}
-
-// GetSuccessUserMap 获取第二级缓存的 sync.Map（零开销，直接引用）
-func (c *UserCache) GetSuccessUserMap() *sync.Map {
-	return &c.successCache.users
-}
-
-// RecentUsers 返回第二级缓存中 successUserTTL 内成功过的用户，最近成功的
-// 在前。返回的是共享快照，调用者不能修改。刚成功的用户最多
-// recentRebuildInterval 后才出现在快照中，已移除的用户也可能短暂残留，
-// 调用者需自行确认用户仍然有效。
-func (c *UserCache) RecentUsers() []*successUserEntry {
-	sc := c.successCache
 	now := time.Now().UnixNano()
-	snap := sc.recent.Load()
-	if snap != nil && now-sc.builtAt.Load() < int64(recentRebuildInterval) {
+	if v, ok := r.users.Load(user.Email); ok {
+		if entry := v.(*successUserEntry); entry.user == user {
+			entry.lastAccess.Store(now)
+			return
+		}
+		// Replace rather than modify: readers hold the entry without the lock.
+	}
+	entry := &successUserEntry{user: user}
+	entry.lastAccess.Store(now)
+	r.users.Store(user.Email, entry)
+}
+
+func (r *recentUsers) snapshot() []*successUserEntry {
+	now := time.Now().UnixNano()
+	snap := r.sorted.Load()
+	if snap != nil && now-r.builtAt.Load() < int64(recentRebuildInterval) {
 		return *snap
 	}
-	// 只让一个协程重建，其余的继续用旧快照
-	if !sc.rebuilding.CompareAndSwap(false, true) {
+	if !r.rebuilding.CompareAndSwap(false, true) {
 		if snap != nil {
 			return *snap
 		}
 		return nil
 	}
-	defer sc.rebuilding.Store(false)
+	defer r.rebuilding.Store(false)
 
-	// 排序用读取时的时间戳，排序期间并发更新不影响比较的一致性
+	// Sort on times read here so concurrent updates cannot break the comparison.
 	type stamped struct {
 		entry *successUserEntry
 		at    int64
@@ -469,11 +231,10 @@ func (c *UserCache) RecentUsers() []*successUserEntry {
 	if snap != nil {
 		live = make([]stamped, 0, len(*snap))
 	}
-	sc.users.Range(func(key, value interface{}) bool {
+	r.users.Range(func(key, value interface{}) bool {
 		entry := value.(*successUserEntry)
-		at := atomic.LoadInt64(&entry.lastAccess)
-		if now-at > int64(successUserTTL) {
-			sc.users.CompareAndDelete(key, entry)
+		if at := entry.lastAccess.Load(); now-at > int64(successUserTTL) {
+			r.users.CompareAndDelete(key, entry)
 		} else {
 			live = append(live, stamped{entry, at})
 		}
@@ -484,46 +245,55 @@ func (c *UserCache) RecentUsers() []*successUserEntry {
 	for i := range live {
 		list[i] = live[i].entry
 	}
-	sc.recent.Store(&list)
-	sc.builtAt.Store(now)
+	r.sorted.Store(&list)
+	r.builtAt.Store(now)
 	return list
 }
 
-// PutWithSuccess 智能缓存策略：支持同IP多用户+中转检测
-func (c *UserCache) PutWithSuccess(key string, user *protocol.MemoryUser) {
-	// 智能第一级缓存：支持同IP多用户，自动中转检测
-	c.PutMultiUser(key, user)
-
-	// 第二级用户缓存：始终更新，这是主要缓存机制
-	c.addSuccessUser(user)
+func newCacheList() *cacheList {
+	head := &cacheNode{}
+	tail := &cacheNode{}
+	head.next = tail
+	tail.prev = head
+	return &cacheList{head: head, tail: tail}
 }
 
-// addSuccessUser 添加成功用户到第二级缓存
-// sync.Map 优化：无锁写入，使用 LoadOrStore 保证并发安全
-func (c *UserCache) addSuccessUser(user *protocol.MemoryUser) {
-	if user.Email == "" {
-		return // Email为空无法作为key
+func (l *cacheList) addToFront(key string) *cacheNode {
+	node := &cacheNode{key: key}
+	l.insertFront(node)
+	return node
+}
+
+func (l *cacheList) insertFront(node *cacheNode) {
+	node.next = l.head.next
+	node.prev = l.head
+	l.head.next.prev = node
+	l.head.next = node
+	l.size++
+}
+
+func (l *cacheList) remove(node *cacheNode) {
+	if node == nil || node == l.head || node == l.tail {
+		return
 	}
+	node.prev.next = node.next
+	node.next.prev = node.prev
+	l.size--
+}
 
-	now := time.Now().UnixNano()
-
-	// 尝试加载已存在的条目
-	if value, loaded := c.successCache.users.LoadOrStore(user.Email, &successUserEntry{
-		user:       user,
-		lastAccess: now,
-	}); loaded {
-		entry := value.(*successUserEntry)
-		if entry.user == user {
-			// 用户已存在，使用原子操作更新访问时间（完全无锁）
-			atomic.StoreInt64(&entry.lastAccess, now)
-		} else {
-			// 用户对象变了（例如密码被修改），替换整个条目，不在原条目上
-			// 修改 user，避免与并发读取者产生数据竞争
-			c.successCache.users.Store(user.Email, &successUserEntry{user: user, lastAccess: now})
-		}
+func (l *cacheList) removeTail() *cacheNode {
+	if l.size == 0 {
+		return nil
 	}
-	// 新用户已通过 LoadOrStore 自动添加，无需额外操作
+	node := l.tail.prev
+	l.remove(node)
+	return node
+}
 
-	// 注意：sync.Map 无上限模式下不做容量限制
-	// 实际使用中成功用户数 ≤ 在线用户数，内存占用极小
+func (l *cacheList) moveToFront(node *cacheNode) {
+	if node == nil || node == l.head.next {
+		return
+	}
+	l.remove(node)
+	l.insertFront(node)
 }

@@ -200,7 +200,9 @@ type udpConn struct {
 	uplink           stats.Counter
 	downlink         stats.Counter
 	inactive         bool
-	cancel           context.CancelFunc
+	// Set under the worker's lock so Close can cancel it from another goroutine.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func (c *udpConn) setInactive() {
@@ -292,6 +294,7 @@ type udpWorker struct {
 
 	checker    *task.Periodic
 	activeConn map[connID]*udpConn
+	closed     bool
 
 	ctx  context.Context
 	cone bool
@@ -325,7 +328,12 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 		uplink:   w.uplinkCounter,
 		downlink: w.downlinkCounter,
 	}
-	w.activeConn[id] = conn
+	conn.ctx, conn.cancel = context.WithCancel(w.ctx)
+	if w.closed {
+		conn.Close()
+	} else {
+		w.activeConn[id] = conn
+	}
 
 	conn.updateActivity()
 	return conn, false
@@ -350,8 +358,7 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 		common.Must(w.checker.Start())
 
 		go func() {
-			ctx, cancel := context.WithCancel(w.ctx)
-			conn.cancel = cancel
+			ctx := conn.ctx
 			sid := session.NewID()
 			ctx = c.ContextWithID(ctx, sid)
 
@@ -431,7 +438,10 @@ func (w *udpWorker) clean() error {
 }
 
 func (w *udpWorker) Start() error {
+	w.Lock()
 	w.activeConn = make(map[connID]*udpConn, 16)
+	w.closed = false
+	w.Unlock()
 	ctx := context.Background()
 	h, err := udp.ListenUDP(ctx, w.address, w.port, w.stream, udp.HubCapacity(256))
 	if err != nil {
@@ -466,6 +476,14 @@ func (w *udpWorker) Close() error {
 		if err := w.checker.Close(); err != nil {
 			errs = append(errs, err)
 		}
+	}
+
+	// The checker no longer runs; close the rest or their handlers wait on reads forever.
+	w.closed = true
+	for id, conn := range w.activeConn {
+		conn.setInactive()
+		conn.Close()
+		delete(w.activeConn, id)
 	}
 
 	if err := common.Close(w.proxy); err != nil {

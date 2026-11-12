@@ -1,7 +1,4 @@
-// Package hysteria is the server transport of the first Hysteria generation,
-// named `hysteria` in a config; the second generation is `hysteria2`. The
-// outbound lives in proxy/hysteria and dials by itself, so only the listening
-// side needs a transport.
+// Package hysteria is the first-generation server transport; the second is hysteria2.
 package hysteria
 
 import (
@@ -24,10 +21,10 @@ const (
 	maxDatagramFrame  = 1200
 	udpMessageChan    = 1024
 	authFailDelay     = 200 * time.Millisecond
+	closeCodeOK       = 0
 	closeCodeProtocol = 1
 	closeCodeAuth     = 2
 
-	// The flow control windows of the reference implementation.
 	streamWindow = 15728640
 	connWindow   = 67108864
 )

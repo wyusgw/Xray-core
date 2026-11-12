@@ -24,8 +24,6 @@ import (
 	_ "github.com/xtls/xray-core/main/distro/all"
 )
 
-// v1Server is a server of the first Hysteria generation, written from the
-// layout of its messages rather than from this repository's client.
 type v1Server struct {
 	addr     string
 	auth     string
@@ -41,8 +39,6 @@ type v1Server struct {
 	requests []string
 }
 
-// xplusConn is the reference packet obfuscation: [16 byte salt][payload xor
-// sha256(key || salt)].
 type xplusConn struct {
 	net.PacketConn
 	key []byte
@@ -396,8 +392,6 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// startClient runs an instance that forwards a local port to target through
-// the server over the first generation.
 func startClient(t *testing.T, server *v1Server, target string, obfs string, extra string) int {
 	t.Helper()
 	host, port, _ := net.SplitHostPort(server.addr)
@@ -517,7 +511,6 @@ func TestV1UDPThroughServer(t *testing.T) {
 	if got := exchangeUDP(t, inPort, small); !bytes.Equal(got, small) {
 		t.Fatalf("got %q", got)
 	}
-	// Large enough to need fragments on the way out and back.
 	large := bytes.Repeat([]byte{0xAB}, 4000)
 	if got := exchangeUDP(t, inPort, large); !bytes.Equal(got, large) {
 		t.Fatalf("a fragmented datagram came back as %d bytes", len(got))

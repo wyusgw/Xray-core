@@ -27,8 +27,6 @@ func init() {
 	}))
 }
 
-// Server is the first-generation inbound. The `hysteria` transport listens and
-// authenticates; it hands this server one connection per request.
 type Server struct {
 	config        *ServerConfig
 	validator     *account.Validator

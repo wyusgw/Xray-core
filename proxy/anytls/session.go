@@ -283,6 +283,26 @@ func (s *session) handleUDPFrame(ctx context.Context, st *stream, body buf.Multi
 	}
 }
 
+func (s *session) handleUoTDownlink(st *stream, body buf.MultiBuffer) error {
+	st.uotInput = appendMultiBuffer(st.uotInput, body)
+	for len(st.uotInput) >= 2 {
+		length := int(binary.BigEndian.Uint16(st.uotInput))
+		if len(st.uotInput) < 2+length {
+			return nil
+		}
+		b := buf.NewWithSize(int32(length))
+		b.Write(st.uotInput[2 : 2+length])
+		dest := st.udpTarget
+		b.UDP = &dest
+		st.consumeUoTInput(2 + length)
+		if err := st.link.Writer.WriteMultiBuffer(buf.MultiBuffer{b}); err != nil {
+			s.finishStream(st.sid, err)
+			return nil
+		}
+	}
+	return nil
+}
+
 func appendMultiBuffer(dst []byte, mb buf.MultiBuffer) []byte {
 	for _, b := range mb {
 		if b != nil {
@@ -639,6 +659,11 @@ func (s *session) readLoop(ctx context.Context) error {
 				buf.ReleaseMulti(body)
 				s.finishStream(sid, err)
 				return nil
+			} else if st.isUDP && s.isClient {
+				if err := s.handleUoTDownlink(st, body); err != nil {
+					return err
+				}
+				continue
 			} else if st.isUDP {
 				if err := s.handleUDPFrame(ctx, st, body); err != nil {
 					return err

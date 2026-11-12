@@ -35,13 +35,6 @@ func init() {
 	}))
 }
 
-// Handler is the mieru outbound.
-//
-// mieru carries traffic over its own obfuscated transport and does its own
-// dialing, so unlike most outbounds here it needs no `streamSettings`: there is
-// no Xray transport underneath it. It still borrows the socket options when a
-// profile happens to supply them, because those are what keep the connection
-// from being looped back into the app's own TUN device.
 type Handler struct {
 	config        *ClientConfig
 	account       *MemoryAccount
@@ -85,8 +78,6 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Handler, error) {
 	return handler, nil
 }
 
-// mieruProfile translates the outbound config into the profile mieru's own
-// client API expects.
 func (h *Handler) mieruProfile() (*appctlpb.ClientProfile, error) {
 	address := h.config.Server.Address.AsAddress()
 	endpoint := &appctlpb.ServerEndpoint{}
@@ -102,7 +93,6 @@ func (h *Handler) mieruProfile() (*appctlpb.ClientProfile, error) {
 	}
 	binding := &appctlpb.PortBinding{Protocol: transportProtocol.Enum()}
 	if h.config.PortRangeStart != 0 && h.config.PortRangeEnd != 0 {
-		// mieru spells a range as a single "start-end" string.
 		binding.PortRange = proto.String(
 			strconv.FormatUint(uint64(h.config.PortRangeStart), 10) +
 				"-" + strconv.FormatUint(uint64(h.config.PortRangeEnd), 10),
@@ -142,9 +132,7 @@ func (h *Handler) mieruProfile() (*appctlpb.ClientProfile, error) {
 	return profile, nil
 }
 
-// mieruClient starts the underlying client on first use. Building it eagerly in
-// NewClient would open sockets while the config is still being loaded, and every
-// node in a profile is constructed even though only one of them is selected.
+// Built lazily: NewClient runs for every node while the config is loading.
 func (h *Handler) mieruClient() (mieruclient.Client, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -161,21 +149,7 @@ func (h *Handler) mieruClient() (mieruclient.Client, error) {
 		Profile:      profile,
 		Dialer:       dialer,
 		PacketDialer: dialer,
-		// mieru resolves the server endpoint here, through Xray's DNS client, so
-		// the lookup follows the profile's DNS and routing rules and the dialer
-		// below receives a literal IP.
-		//
-		// Handing the bare name to the dialer instead (mieru's BypassDialerDNS)
-		// is only correct when the dialer resolves internally, and this one does
-		// not: internet.DialSystem passes a domain straight to Go's net.Dialer,
-		// which asks the *system* resolver. With the TUN up, that query is
-		// answered through the very tunnel this dial is trying to establish, so
-		// the first connections to a domain-addressed node stall until the
-		// resolver gives up and only succeed once the answer is cached.
-		//
-		// An address that is already an IP costs nothing extra: mieru returns it
-		// without a lookup. Only the stream transport was ever affected — the
-		// packet underlay has no bypass and has always resolved through here.
+		// Resolve with Xray's DNS: the system resolver would loop through the TUN being dialed.
 		Resolver: xrayResolver{client: h.dnsClient},
 	}); err != nil {
 		return nil, errors.New("failed to store mieru client config").Base(err)
@@ -211,8 +185,6 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		Net:      target.Network.SystemString(),
 	}
 	if target.Address.Family().IsDomain() {
-		// Leave the name unresolved: mieru forwards it to the server, which is
-		// the whole point of proxying by domain.
 		destination.FQDN = target.Address.Domain()
 	} else {
 		destination.IP = target.Address.IP()
@@ -272,10 +244,6 @@ func (h *Handler) processTCP(ctx context.Context, link *transport.Link, conn net
 }
 
 func (h *Handler) processUDP(ctx context.Context, link *transport.Link, conn net.Conn, target net.Destination, sessionPolicy policy.Session, timer *signal.ActivityTimer) error {
-	// mieru hands back a stream even for a UDP destination, so packets need two
-	// layers on top of it: PacketOverStreamTunnel to keep their boundaries, and
-	// UDPAssociateWrapper to carry the per-packet destination in a socks5
-	// UDP-associate header.
 	packetConn := apicommon.NewUDPAssociateWrapper(apicommon.NewPacketOverStreamTunnel(conn))
 
 	requestDone := func() error {
@@ -303,18 +271,8 @@ func (h *Handler) processUDP(ctx context.Context, link *transport.Link, conn net
 	return nil
 }
 
-// Close releases the mieru client when the outbound handler is removed, for
-// example on a config reload. mieru clients cannot be restarted, so the field is
-// cleared and the next request builds a fresh one.
-//
-// Stopping the client is detached on purpose. mieru ends each live session with
-// a graceful close that polls for up to a second waiting for its close segment
-// to reach the wire — but the underlay sets the connection deadline to "now"
-// before it closes its sessions, so that segment can never be written and the
-// poll always runs its full 1000 iterations. Sessions are closed serially, as
-// are the outbound handlers above them, and the core holds its run lock for the
-// whole shutdown, so waiting here would add about a second per open connection
-// before the app can stop.
+// mieru clients cannot restart, so the next request builds a fresh one. Stopping is
+// detached: each session's graceful close waits ~1s for a segment never written.
 func (h *Handler) Close() error {
 	h.mu.Lock()
 	client := h.client
@@ -370,9 +328,6 @@ func (r *udpPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	}
 	b.Resize(0, int32(n))
 
-	// The wrapper reports the origin of each packet. Fall back to the session
-	// destination when it is not something Xray can express, so a reply is
-	// delivered rather than dropped.
 	source := r.destination
 	if udpAddr, ok := addr.(*net.UDPAddr); ok && udpAddr != nil && len(udpAddr.IP) > 0 {
 		source = net.UDPDestination(net.IPAddress(udpAddr.IP), net.Port(udpAddr.Port))
@@ -381,8 +336,6 @@ func (r *udpPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	return buf.MultiBuffer{b}, nil
 }
 
-// mieruAddr converts an Xray destination into the address type mieru's socks5
-// layer understands, keeping domain names unresolved.
 func mieruAddr(destination net.Destination) model.NetAddrSpec {
 	addr := model.NetAddrSpec{
 		AddrSpec: model.AddrSpec{Port: int(destination.Port.Value())},
@@ -396,9 +349,6 @@ func mieruAddr(destination net.Destination) model.NetAddrSpec {
 	return addr
 }
 
-// systemDialer lets mieru reach its own server through Xray's dialer, so the
-// connection picks up the socket options that keep it outside the app's TUN and
-// resolves names with Xray's DNS instead of the host resolver.
 type systemDialer struct {
 	socketSettings *internet.SocketConfig
 }
@@ -431,8 +381,6 @@ func (d *systemDialer) ListenPacket(ctx context.Context, network, laddr, raddr s
 	}
 }
 
-// xrayResolver resolves the mieru server's name with Xray's own DNS client, so
-// the lookup follows the profile's DNS and routing rules.
 type xrayResolver struct {
 	client dns.Client
 }

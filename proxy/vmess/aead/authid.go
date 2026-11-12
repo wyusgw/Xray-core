@@ -76,13 +76,7 @@ func NewAuthIDDecoderHolder() *AuthIDDecoderHolder {
 	}
 }
 
-// AuthIDDecoderHolder finds the user an auth ID belongs to. An auth ID is
-// encrypted with its user's key and carries no user identifier, so finding
-// the user means trying users' keys until one decrypts it to a valid
-// checksum. The users a client address matched recently are tried first.
-//
-// AddUser and RemoveUser must not run concurrently with each other or with
-// Match; Match may run concurrently with itself.
+// AddUser and RemoveUser must not run concurrently with each other or with Match.
 type AuthIDDecoderHolder struct {
 	items  []*AuthIDDecoderItem
 	index  map[[16]byte]int // key -> position in items
@@ -132,9 +126,6 @@ func (a *AuthIDDecoderHolder) RemoveUser(key [16]byte) {
 	delete(a.index, key)
 }
 
-// checks reports whether authID decrypts under this item's key to a valid
-// checksum, and the timestamp it carries. d is scratch space, passed in so
-// that it isn't allocated per call.
 func (item *AuthIDDecoderItem) checks(authID, d *[16]byte) (int64, bool) {
 	item.dec.s.Decrypt(d[:], authID[:])
 	if binary.BigEndian.Uint32(d[12:]) != crc32.ChecksumIEEE(d[:12]) {
@@ -147,12 +138,8 @@ func (a *AuthIDDecoderHolder) Match(authID [16]byte) (interface{}, error) {
 	return a.MatchFrom(authID, "")
 }
 
-// MatchFrom is Match for a connection from source (the client's IP, or ""
-// if unknown), trying the users that source matched recently first.
 func (a *AuthIDDecoderHolder) MatchFrom(authID [16]byte, source string) (interface{}, error) {
-	// A wrong key yields a valid checksum by chance once in 2^32 tries, so a
-	// match with a bad timestamp can be a false positive: keep looking, and
-	// report the timestamp only if no other user matches.
+	// A wrong key passes the checksum once in 2^32: on a bad timestamp keep looking.
 	errNoMatch := ErrNotFound
 	var d [16]byte
 

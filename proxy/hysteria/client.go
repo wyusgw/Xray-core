@@ -35,7 +35,6 @@ const (
 	maxDatagramFrame = 1200
 	defaultALPN      = "hysteria"
 
-	// The flow control windows of the reference client.
 	streamWindow = 15728640
 	connWindow   = 67108864
 )
@@ -46,13 +45,6 @@ func init() {
 	}))
 }
 
-// Handler is the first-generation outbound. It keeps one QUIC session to the
-// server and opens a stream on it for each connection.
-//
-// It needs no `streamSettings`: there is no Xray transport underneath it, as
-// with mieru. It still borrows the socket options when a profile supplies
-// them, because those keep the connection from being looped back into the
-// app's own TUN device.
 type Handler struct {
 	config         *ClientConfig
 	server         *protocol.ServerSpec
@@ -105,8 +97,6 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Handler, error) {
 	return handler, nil
 }
 
-// serverLink is a QUIC session that has passed the hello, with the sessions of
-// UDP it carries.
 type serverLink struct {
 	conn    *quic.Conn
 	tr      *quic.Transport
@@ -132,8 +122,6 @@ func (l *serverLink) close() {
 	_ = l.pktConn.Close()
 }
 
-// receive hands each datagram to the UDP session it names, until the QUIC
-// session ends.
 func (l *serverLink) receive() {
 	for {
 		datagram, err := l.conn.ReceiveDatagram(context.Background())
@@ -174,8 +162,6 @@ func (l *serverLink) unregister(id uint32) {
 	l.Unlock()
 }
 
-// connect returns the live session to the server, dialing one when there is
-// none. The hello of a dead session is never reused.
 func (h *Handler) connect(ctx context.Context) (*serverLink, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -282,7 +268,6 @@ func (h *Handler) dial(ctx context.Context) (*serverLink, error) {
 	}
 	_ = stream.SetDeadline(time.Time{})
 
-	// The client sends at the rate the server says it can receive.
 	if recvBPS == 0 {
 		congestion.UseBBR(conn, bbr.ProfileStandard)
 	} else {
@@ -426,7 +411,6 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, _ internet.
 	return nil
 }
 
-// udpWriter sends each packet as a message of the session the server named.
 type udpWriter struct {
 	conn *quic.Conn
 	id   uint32

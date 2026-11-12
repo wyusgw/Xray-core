@@ -65,10 +65,8 @@ func newServerService(options serverOptions) (*serverService, error) {
 		tlsConfig: options.TLSConfig,
 		quicConfig: &quic.Config{
 			DisablePathMTUDiscovery: !(runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "android" || runtime.GOOS == "darwin"),
-			// Start with small receive windows: quic-go grows them (up to its
-			// default maximums) only while the application keeps up, so a
-			// speed-limited user can't buffer megabytes of upload ahead of the
-			// limiter, while unthrottled streams still ramp up within a few RTTs.
+			// Small initial windows so a speed-limited user cannot buffer megabytes ahead
+			// of the limiter.
 			InitialStreamReceiveWindow:     128 << 10,
 			InitialConnectionReceiveWindow: 320 << 10,
 			EnableDatagrams:                true,
@@ -232,9 +230,7 @@ func (s *serverSession) handleUniStream(stream *quic.ReceiveStream) error {
 		go s.resumePendingTasks()
 		return nil
 	case commandPacket, commandDissociate:
-		// The stream body stays unread until the command actually runs — the
-		// authentication stream may still be in flight, and cancelling the read
-		// here would drop the queued packet.
+		// Leave the body unread: the auth stream may still be in flight and the packet is queued.
 		if s.authReady() {
 			return s.handlePendingUniStream(stream, buffer)
 		}

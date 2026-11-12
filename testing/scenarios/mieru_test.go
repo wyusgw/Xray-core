@@ -44,16 +44,10 @@ func mieruLogConfig() []*serial.TypedMessage {
 	}
 }
 
-// mieruStreamConfig is the "network": "mieru" transport the inbound listens on.
-// Only the server side has one: the outbound dials mieru itself, so it rides on
-// no Xray transport at all.
 func mieruStreamConfig() *internet.StreamConfig {
 	return &internet.StreamConfig{ProtocolName: "mieru"}
 }
 
-// mieruConfigs builds a server and a client that talk to each other over mieru.
-// transport selects mieru's underlay, "TCP" or "UDP", which is unrelated to the
-// network of the traffic being proxied.
 func mieruConfigs(serverPort net.Port, username, password, transport string) (*core.Config, *core.Config) {
 	serverConfig := &core.Config{
 		App: mieruLogConfig(),
@@ -180,16 +174,12 @@ func TestMieruUDP(t *testing.T) {
 	}
 }
 
-// TestMieruAddUser checks that a user added after the server is already
-// listening can connect without the inbound being restarted, which is what the
-// panel relies on when it syncs its user list.
 func TestMieruAddUser(t *testing.T) {
 	tcpServer := tcp.Server{MsgProcessor: xor}
 	dest, err := tcpServer.Start()
 	common.Must(err)
 	defer tcpServer.Close()
 
-	// The server starts knowing only the first user.
 	serverPort := tcp.PickPort()
 	serverConfig, _ := mieruConfigs(serverPort, newMieruUsername(), "mieru-password", "TCP")
 
@@ -211,7 +201,6 @@ func TestMieruAddUser(t *testing.T) {
 		},
 	}
 
-	// The commander is how the panel drives user changes at runtime.
 	cmdPort := tcp.PickPort()
 	serverConfig.App = append(serverConfig.App, serial.ToTypedMessage(&commander.Config{
 		Tag:    "api",
@@ -225,7 +214,6 @@ func TestMieruAddUser(t *testing.T) {
 	common.Must(err)
 	defer CloseAllServers(servers)
 
-	// The late user is not known yet, so the handshake must not succeed.
 	if err := testTCPConn(clientPort, 1024, time.Second*5)(); err == nil {
 		t.Error("expected the connection to fail before the user was added")
 	}
@@ -250,8 +238,6 @@ func TestMieruAddUser(t *testing.T) {
 	})
 	common.Must(err)
 
-	// The listener was never restarted, so this only passes if the new user
-	// reached mieru's Mux while it was running.
 	if err := testTCPConn(clientPort, 10240, time.Second*20)(); err != nil {
 		t.Error("expected the connection to succeed after the user was added: ", err)
 	}
@@ -263,8 +249,6 @@ func TestMieruAddUser(t *testing.T) {
 	common.Must(err)
 }
 
-// TestMieruUserStats checks that traffic is attributed to the mieru user that
-// carried it, which is what a panel reports on.
 func TestMieruUserStats(t *testing.T) {
 	tcpServer := tcp.Server{MsgProcessor: xor}
 	dest, err := tcpServer.Start()
@@ -273,8 +257,6 @@ func TestMieruUserStats(t *testing.T) {
 
 	serverConfig, clientConfig := mieruConfigs(tcp.PickPort(), newMieruUsername(), "mieru-password", "TCP")
 
-	// Per-user counters are only kept for levels whose policy asks for them, and
-	// the users built above sit at the default level 0.
 	cmdPort := tcp.PickPort()
 	serverConfig.App = append(serverConfig.App,
 		serial.ToTypedMessage(&stats.Config{}),

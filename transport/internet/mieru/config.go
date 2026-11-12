@@ -7,11 +7,7 @@ import (
 
 const protocolName = "mieru"
 
-// Config carries no settings of its own. Everything the listener needs comes
-// from the inbound's own config, handed over through the context in context.go,
-// because mieru's parameters (users, underlay, MTU) are protocol settings rather
-// than stream settings. The type exists so `"network": "mieru"` resolves to a
-// registered transport like every other one.
+// Config is empty: mieru's settings are protocol settings passed through the context.
 type Config struct{}
 
 func init() {

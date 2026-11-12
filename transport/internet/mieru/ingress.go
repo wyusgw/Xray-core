@@ -6,21 +6,12 @@ import (
 	"sync/atomic"
 )
 
-// IngressLimiter paces bytes read from a client's raw connection.
 type IngressLimiter interface {
 	Wait(n int64)
 }
 
-// mieru buffers up to segmentTreeCapacity (4096) segments of up to 32 KiB
-// each per session before its receive window pushes back on the client, so a
-// speed limit applied to the session's reader only throttles what leaves the
-// server: the client still uploads at full speed into that buffer. Pacing the
-// raw stream connection instead keeps the client's own TCP send blocked, so
-// the upload limit is what the client actually gets.
-//
-// Stream connections are tracked by remote address, which is also the source
-// address a mieru session reports, so the dispatcher can attach a user's
-// limiter once it has identified the user.
+// Pace the raw conn, not the session: mieru buffers 4096 segments per session, so
+// only blocking the client's TCP send enforces the upload limit.
 var ingressConns sync.Map // remote address string -> *ingressConn
 
 type limiterBox struct {
@@ -31,11 +22,14 @@ type ingressConn struct {
 	gonet.Conn
 	key     string
 	limiter atomic.Pointer[limiterBox]
+	// Once mieru reports decoded payload, pace that instead of bytes read.
+	paced atomic.Bool
+	conns *sync.Map
 }
 
 func (c *ingressConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
-	if n > 0 {
+	if n > 0 && !c.paced.Load() {
 		if box := c.limiter.Load(); box != nil {
 			box.limiter.Wait(int64(n))
 		}
@@ -43,13 +37,24 @@ func (c *ingressConn) Read(b []byte) (int, error) {
 	return n, err
 }
 
+func (c *ingressConn) PacePayload(n int) {
+	c.paced.Store(true)
+	if box := c.limiter.Load(); box != nil {
+		box.limiter.Wait(int64(n))
+	}
+}
+
 func (c *ingressConn) Close() error {
 	ingressConns.CompareAndDelete(c.key, c)
+	if c.conns != nil {
+		c.conns.Delete(c)
+	}
 	return c.Conn.Close()
 }
 
 type ingressListener struct {
 	gonet.Listener
+	conns *sync.Map // *ingressConn -> struct{}
 }
 
 func (l *ingressListener) Accept() (gonet.Conn, error) {
@@ -58,16 +63,17 @@ func (l *ingressListener) Accept() (gonet.Conn, error) {
 		return nil, err
 	}
 	c := &ingressConn{
-		Conn: conn,
-		key:  conn.RemoteAddr().String(),
+		Conn:  conn,
+		key:   conn.RemoteAddr().String(),
+		conns: l.conns,
 	}
 	ingressConns.Store(c.key, c)
+	if l.conns != nil {
+		l.conns.Store(c, struct{}{})
+	}
 	return c, nil
 }
 
-// AttachIngressLimiter paces reads on the raw stream connection whose remote
-// address is remote, and reports whether such a connection was found. It is a
-// no-op for the packet (UDP) underlay, which has no stream to push back on.
 func AttachIngressLimiter(remote string, limiter IngressLimiter) bool {
 	v, ok := ingressConns.Load(remote)
 	if !ok {

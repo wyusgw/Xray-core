@@ -1,7 +1,10 @@
 package udp
 
 import (
+	"errors"
 	"fmt"
+	gonet "net"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common/net"
 )
@@ -9,7 +12,7 @@ import (
 type Server struct {
 	Port         net.Port
 	MsgProcessor func(msg []byte) []byte
-	accepting    bool
+	accepting    atomic.Bool
 	conn         *net.UDPConn
 }
 
@@ -32,11 +35,14 @@ func (server *Server) Start() (net.Destination, error) {
 }
 
 func (server *Server) handleConnection(conn *net.UDPConn) {
-	server.accepting = true
-	for server.accepting {
+	server.accepting.Store(true)
+	for server.accepting.Load() {
 		buffer := make([]byte, 2*1024)
 		nBytes, addr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
+			if errors.Is(err, gonet.ErrClosed) {
+				return
+			}
 			fmt.Printf("Failed to read from UDP: %v\n", err)
 			continue
 		}
@@ -49,6 +55,6 @@ func (server *Server) handleConnection(conn *net.UDPConn) {
 }
 
 func (server *Server) Close() error {
-	server.accepting = false
+	server.accepting.Store(false)
 	return server.conn.Close()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/apernet/quic-go"
@@ -26,10 +27,13 @@ type Listener struct {
 	pktConn  net.PacketConn
 	tr       *quic.Transport
 	listener *quic.Listener
+
+	// Tracked so Close can send CONNECTION_CLOSE; otherwise clients wait for a timeout.
+	connsMu sync.Mutex
+	conns   map[*quic.Conn]struct{}
+	closed  bool
 }
 
-// handleClient runs one client's QUIC connection: the hello on its first
-// stream, then a stream for each connection or UDP session.
 func (l *Listener) handleClient(conn *quic.Conn) {
 	ctx := context.Background()
 	openCtx, cancel := context.WithTimeout(ctx, controlTimeout)
@@ -72,8 +76,6 @@ func (l *Listener) handleClient(conn *quic.Conn) {
 	}
 }
 
-// useCongestion sets the pace of the server's sending: the rate the client said
-// it can receive at, held to the server's own limit.
 func (l *Listener) useCongestion(conn *quic.Conn, clientRecv uint64) {
 	p := l.quicParams
 	rate := clientRecv
@@ -143,7 +145,23 @@ func (l *Listener) keepAccepting() {
 			}
 			break
 		}
-		go l.handleClient(conn)
+		l.connsMu.Lock()
+		if l.closed {
+			l.connsMu.Unlock()
+			_ = conn.CloseWithError(closeCodeOK, "")
+			continue
+		}
+		if l.conns == nil {
+			l.conns = make(map[*quic.Conn]struct{})
+		}
+		l.conns[conn] = struct{}{}
+		l.connsMu.Unlock()
+		go func() {
+			l.handleClient(conn)
+			l.connsMu.Lock()
+			delete(l.conns, conn)
+			l.connsMu.Unlock()
+		}()
 	}
 }
 
@@ -152,7 +170,22 @@ func (l *Listener) Addr() net.Addr {
 }
 
 func (l *Listener) Close() error {
-	return errors.Combine(l.listener.Close(), l.tr.Close(), l.pktConn.Close())
+	err := l.listener.Close()
+	l.connsMu.Lock()
+	conns := l.conns
+	l.conns = nil
+	l.closed = true
+	l.connsMu.Unlock()
+	var wg sync.WaitGroup
+	for conn := range conns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = conn.CloseWithError(closeCodeOK, "")
+		}()
+	}
+	wg.Wait()
+	return errors.Combine(err, l.tr.Close(), l.pktConn.Close())
 }
 
 func Listen(ctx context.Context, address net.Address, port net.Port, streamSettings *internet.MemoryStreamConfig, handler internet.ConnHandler) (internet.Listener, error) {

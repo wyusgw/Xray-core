@@ -43,8 +43,6 @@ func TestMieruClientConfig(t *testing.T) {
 	if built.GetServer().GetPort() != 2999 {
 		t.Errorf("unexpected port: %d", built.GetServer().GetPort())
 	}
-	// Normalised to upper case so the handler can switch on it without
-	// re-folding the case of whatever the profile happened to spell.
 	if built.GetTransport() != "TCP" {
 		t.Errorf("unexpected transport: %q", built.GetTransport())
 	}
@@ -108,7 +106,6 @@ func TestMieruClientConfigRejectsInvalidSettings(t *testing.T) {
 		{"no username", `{"address":"a.example.com","port":2999,"password":"p"}`},
 		{"no password", `{"address":"a.example.com","port":2999,"username":"u"}`},
 		{"no port at all", `{"address":"a.example.com","username":"u","password":"p"}`},
-		// Ambiguous rather than harmless: the two disagree about which port to use.
 		{"port and range together", `{"address":"a.example.com","port":2999,"portRange":"2090-2099","username":"u","password":"p"}`},
 		{"unsupported transport", `{"address":"a.example.com","port":2999,"transport":"quic","username":"u","password":"p"}`},
 		{"unsupported multiplexing", `{"address":"a.example.com","port":2999,"multiplexing":"MULTIPLEXING_MAX","username":"u","password":"p"}`},
@@ -167,7 +164,6 @@ func TestMieruServerConfig(t *testing.T) {
 	}
 }
 
-// A server that starts with no users is valid: a panel adds them at runtime.
 func TestMieruServerConfigWithoutUsers(t *testing.T) {
 	built, err := buildMieruServerConfig(t, `{"transport": "tcp"}`)
 	if err != nil {

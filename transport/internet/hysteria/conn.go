@@ -13,9 +13,6 @@ import (
 	"github.com/xtls/xray-core/common/protocol"
 )
 
-// StreamConn is a TCP request of a client: the stream it was made on, carrying
-// the bytes of the connection. The proxy answers the request with
-// WriteResponse before it sends any of them.
 type StreamConn struct {
 	stream *quic.Stream
 	local  net.Addr
@@ -30,7 +27,6 @@ func (c *StreamConn) User() *protocol.MemoryUser {
 	return c.user
 }
 
-// Target is the host and port the client asked to be connected to.
 func (c *StreamConn) Target() (string, uint16) {
 	return c.host, c.port
 }
@@ -50,9 +46,6 @@ func (c *StreamConn) SetDeadline(t time.Time) error      { return c.stream.SetDe
 func (c *StreamConn) SetReadDeadline(t time.Time) error  { return c.stream.SetReadDeadline(t) }
 func (c *StreamConn) SetWriteDeadline(t time.Time) error { return c.stream.SetWriteDeadline(t) }
 
-// UDPConn is a UDP session of a client. Its packets travel as QUIC datagrams
-// of the client's connection, and the session lasts as long as the stream of
-// the request that opened it.
 type UDPConn struct {
 	conn   *quic.Conn
 	stream *quic.Stream
@@ -71,8 +64,6 @@ func (c *UDPConn) User() *protocol.MemoryUser {
 	return c.user
 }
 
-// ReadPacket returns the next whole packet of the session and the address the
-// client wants it sent to.
 func (c *UDPConn) ReadPacket(ctx context.Context) (host string, port uint16, data []byte, err error) {
 	for {
 		select {
@@ -88,7 +79,6 @@ func (c *UDPConn) ReadPacket(ctx context.Context) (host string, port uint16, dat
 	}
 }
 
-// WritePacket sends data to the client as coming from host:port.
 func (c *UDPConn) WritePacket(host string, port uint16, data []byte) error {
 	msg := UDPMessage{SessionID: c.id, Host: host, Port: port, FragCount: 1, Data: data}
 	err := c.send(&msg)
@@ -131,8 +121,6 @@ func (c *UDPConn) SetDeadline(time.Time) error      { return nil }
 func (c *UDPConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *UDPConn) SetWriteDeadline(time.Time) error { return nil }
 
-// udpSessions hands each datagram of a client's connection to the session it
-// names.
 type udpSessions struct {
 	sync.RWMutex
 	m    map[uint32]*UDPConn

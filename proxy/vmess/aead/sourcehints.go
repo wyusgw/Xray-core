@@ -3,22 +3,11 @@ package aead
 import "sync"
 
 const (
-	// maxHintsPerSource is how many recent users are kept per source. A
-	// household behind one IP has a few; a relay has many, and gains little
-	// from hints either way.
-	maxHintsPerSource = 4
-	hintShards        = 16
-	// hintsPerGeneration bounds each shard's current generation; with the
-	// previous one kept, at most 2*hintShards*hintsPerGeneration sources
-	// are remembered.
+	maxHintsPerSource  = 4
+	hintShards         = 16
 	hintsPerGeneration = 1024
 )
 
-// sourceHints remembers which users recently authenticated from each source
-// address, most recent first. Each shard keeps two generations of entries:
-// when the current one fills, it becomes the previous one and the old
-// previous one is dropped, which forgets sources not seen for a while
-// without tracking per-entry age.
 type sourceHints struct {
 	shards [hintShards]hintShard
 }
@@ -44,7 +33,6 @@ func (h *sourceHints) shard(source string) *hintShard {
 	return &h.shards[x%hintShards]
 }
 
-// get copies source's hints into out and returns how many there are.
 func (h *sourceHints) get(source string, out *[maxHintsPerSource]*AuthIDDecoderItem) int {
 	s := h.shard(source)
 	s.mu.Lock()
@@ -63,7 +51,6 @@ func (h *sourceHints) get(source string, out *[maxHintsPerSource]*AuthIDDecoderI
 	return n
 }
 
-// put records that item just authenticated from source.
 func (h *sourceHints) put(source string, item *AuthIDDecoderItem) {
 	s := h.shard(source)
 	s.mu.Lock()

@@ -58,8 +58,6 @@ func ReadTCPSession(validator *Validator, reader io.Reader) (*protocol.RequestHe
 	return ReadTCPSessionWithCache(validator, reader, "")
 }
 
-// ReadTCPSessionWithCache 带缓存支持的TCP会话读取
-// cacheKey: 缓存键（客户端IP，不含端口），为空则跳过缓存
 func ReadTCPSessionWithCache(validator *Validator, reader io.Reader, cacheKey string) (*protocol.RequestHeader, buf.Reader, error) {
 	behaviorSeed := validator.GetBehaviorSeed()
 	drainer, errDrain := drain.NewBehaviorSeedLimitedDrainer(int64(behaviorSeed), 16+38, 3266, 64)
@@ -237,14 +235,12 @@ func DecodeUDPPacket(validator *Validator, payload *buf.Buffer) (*protocol.Reque
 	return DecodeUDPPacketWithCache(validator, payload, "")
 }
 
-// DecodeUDPPacketWithUser 基于已知用户解码 UDP 包（不修改 Validator）
 func DecodeUDPPacketWithUser(user *protocol.MemoryUser, payload *buf.Buffer) (*protocol.RequestHeader, *buf.Buffer, error) {
 	account, ok := user.Account.(*MemoryAccount)
 	if !ok {
 		return nil, nil, errors.New("expected MemoryAccount returned from validator")
 	}
 
-	// 直接使用账户的 Cipher 在原有缓冲区上解密（与 DecodeUDPPacket 行为一致）
 	if account.Cipher.IsAEAD() {
 		if err := account.Cipher.DecodePacket(account.Key, payload); err != nil {
 			return nil, nil, errors.New("failed to decrypt UDP payload").Base(err)
@@ -278,7 +274,6 @@ func DecodeUDPPacketWithUser(user *protocol.MemoryUser, payload *buf.Buffer) (*p
 	return request, payload, nil
 }
 
-// DecodeUDPPacketWithCache 带缓存支持的UDP包解码
 func DecodeUDPPacketWithCache(validator *Validator, payload *buf.Buffer, cacheKey string) (*protocol.RequestHeader, *buf.Buffer, error) {
 	rawPayload := payload.Bytes()
 	user, _, d, _, err := validator.GetWithCache(rawPayload, protocol.RequestCommandUDP, cacheKey)

@@ -260,6 +260,12 @@ func (i *MultiUserInbound) processTCP(ctx context.Context, conn net.Conn, dispat
 	if err != nil {
 		return err
 	}
+	if u, ok := i.usersByHash.Load(decryptedHash); !ok || u != user {
+		// Checked after Dispatch so closing a removed user's links cannot miss this one.
+		common.Interrupt(link.Reader)
+		common.Interrupt(link.Writer)
+		return errors.New("user ", user.Email, " was removed")
+	}
 
 	if len(reqHeader.EarlyData) > 0 {
 		mb := buf.MergeBytes(nil, reqHeader.EarlyData)
@@ -296,23 +302,28 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			sessionID := binary.BigEndian.Uint64(rawHeader[:8])
 			packetID := binary.BigEndian.Uint64(rawHeader[8:16])
 
-			sessionItem := i.udpSessions.GetOrCreate(sessionID)
+			// The session ID is not authenticated yet: store the session only after decryption.
+			sessionItem, stored := i.udpSessions.Lookup(sessionID)
 
-			if !sessionItem.CheckPacketID(packetID) {
+			if stored && !sessionItem.CheckPacketID(packetID) {
 				b.Release()
 				continue
 			}
 
-			var userPSK []byte
-			var currentUser *protocol.MemoryUser
-			sessionItem.Lock()
-			currentUser = sessionItem.User
-			userPSK = sessionItem.UserPSK
-			sessionItem.Unlock()
+			currentUser, userPSK, userHash := sessionItem.sessionUser()
+			if currentUser != nil {
+				if u, ok := i.usersByHash.Load(userHash); !ok || u != currentUser {
+					// The user was removed: end its session so a user added back starts a new one.
+					i.udpSessions.Remove(sessionItem)
+					sessionItem, stored = i.udpSessions.Lookup(sessionID)
+					currentUser, userPSK, userHash = sessionItem.sessionUser()
+				}
+			}
 
 			if currentUser == nil {
 				// Decrypt EIH
 				decryptedHash := DecryptUDPEIH(i.udpMasterCipher, rawHeader[:], packetBytes[16:32])
+				userHash = decryptedHash
 
 				user, ok := i.usersByHash.Load(decryptedHash)
 				if !ok {
@@ -328,16 +339,20 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			if err != nil {
 				continue
 			}
+			if !stored {
+				sessionItem = i.udpSessions.Store(sessionItem, packetID)
+			}
 
 			sessionItem.Lock()
 			if sessionItem.User == nil {
 				sessionItem.User = currentUser
 				sessionItem.UserPSK = userPSK
+				sessionItem.userHash = userHash
 			}
 			sessionItem.Unlock()
 
 			link, err := sessionItem.EnsureLink(ctx, conn, decoded.Destination, dispatcher, i.policyManager, func(replyDest net.Destination, payload []byte) ([]byte, error) {
-				return i.encodeServerUDPPacket(sessionID, userPSK, replyDest, payload)
+				return sessionItem.EncodeResponse(i.method, userPSK, replyDest, payload)
 			})
 			if err != nil {
 				continue
@@ -349,8 +364,4 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			_ = link.Writer.WriteMultiBuffer(buf.MultiBuffer{pBuf})
 		}
 	}
-}
-
-func (i *MultiUserInbound) encodeServerUDPPacket(clientSessionID uint64, userPSK []byte, dest net.Destination, payload []byte) ([]byte, error) {
-	return i.udpSessions.EncodeServerPacket(i.method, userPSK, clientSessionID, dest, payload)
 }

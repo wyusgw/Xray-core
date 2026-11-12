@@ -16,6 +16,7 @@ import (
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/routing"
 	. "github.com/xtls/xray-core/proxy/shadowsocks_2022"
 	"github.com/xtls/xray-core/transport"
@@ -373,4 +374,40 @@ func TestRelayTCPHandshakeForwarding(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUDPSessionEnsureLinkConcurrent(t *testing.T) {
+	m := NewUDPSessionManager(time.Minute)
+	s := m.GetOrCreate(1)
+	disp := &dummyDispatcher{
+		onDispatch: func(ctx context.Context, d net.Destination) (*transport.Link, error) {
+			r, w := gonet.Pipe()
+			t.Cleanup(func() { r.Close(); w.Close() })
+			return &transport.Link{Reader: buf.NewReader(r), Writer: &customWriter{write: func(mb buf.MultiBuffer) error {
+				buf.ReleaseMulti(mb)
+				return nil
+			}}}, nil
+		},
+	}
+	c1, c2 := gonet.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	conn := &dummyStatConn{Conn: c1}
+	dest := net.UDPDestination(net.LocalHostIP, 53)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				if _, err := s.EnsureLink(context.Background(), conn, dest, disp, policy.DefaultManager{}, nil); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	s.Close()
 }
