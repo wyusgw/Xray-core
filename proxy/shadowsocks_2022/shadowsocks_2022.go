@@ -95,8 +95,7 @@ func (s *ServerUDPSession) EnsureLink(
 	}
 
 	sessionPolicy := policyManager.ForLevel(level)
-	// Set the timer before the link: packets that find the link refresh the
-	// timer without taking the lock.
+	// Set the timer before the link: packets that find the link refresh it without the lock.
 	s.timer.Store(signal.CancelAfterInactivity(sessCtx, func() {
 		if s.manager != nil {
 			// The session may have been replaced already: keep the new one.

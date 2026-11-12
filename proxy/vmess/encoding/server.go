@@ -112,8 +112,6 @@ func NewServerSession(validator *vmess.TimedUserValidator, sessionHistory *Sessi
 	}
 }
 
-// SetSource sets the client's IP address, used to try the users that
-// recently connected from it first.
 func (s *ServerSession) SetSource(source string) {
 	s.source = source
 }

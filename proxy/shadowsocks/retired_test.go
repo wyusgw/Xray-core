@@ -21,8 +21,6 @@ func udpGet(v *Validator, pkt []byte, ip string) (*protocol.MemoryUser, error) {
 	return u, err
 }
 
-// Clients of removed users behind a relay must not get the relay IP limited,
-// or other clients behind it could not connect.
 func TestRelayWithExpiredClients(t *testing.T) {
 	v := newTestValidator(t, scanLimitMinUsers*2)
 	const relay = "192.0.2.10"
@@ -47,12 +45,10 @@ func TestRelayWithExpiredClients(t *testing.T) {
 		t.Fatalf("relay remembers %d removed users, want %d", n, len(expired))
 	}
 
-	// A client never seen before still connects through the relay.
 	good := v.users[7]
 	if u, err := udpGet(v, udpPacketFor(t, good), relay); err != nil || u != good {
 		t.Fatalf("new client behind relay: user=%v err=%v", u, err)
 	}
-	// The relay keeps recognizing expired clients after a success.
 	if len(v.scanLimit.Retired(relay)) != len(expired) {
 		t.Fatal("success forgot the removed users of the relay")
 	}
@@ -174,8 +170,6 @@ func TestRetiredPerIPBounded(t *testing.T) {
 	}
 }
 
-// BenchmarkExpiredClientsBehindRelay measures a retry from one of 32 expired
-// clients behind a relay, once they are recognized.
 func BenchmarkExpiredClientsBehindRelay(b *testing.B) {
 	v := newTestValidator(b, 10000)
 	const relay = "192.0.2.70"
@@ -266,8 +260,6 @@ func TestSharedKeyNotRetired(t *testing.T) {
 	}
 }
 
-// A failed full scan also tries removed users, so many removed users make
-// full scans expensive even with few users. They must be limited too.
 func TestFewUsersManyRetiredLimited(t *testing.T) {
 	v := newTestValidator(t, 8)
 	retired := make([]*protocol.MemoryUser, scanLimitMinUsers)
@@ -288,7 +280,6 @@ func TestFewUsersManyRetiredLimited(t *testing.T) {
 	}
 }
 
-// A removed user whose email is not lowercase must leave the cache.
 func TestDelMixedCaseEmailLeavesCache(t *testing.T) {
 	v := newTestValidator(t, 2)
 	u := testUser(100)

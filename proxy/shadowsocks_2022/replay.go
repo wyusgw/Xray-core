@@ -83,8 +83,6 @@ type ServerUDPSession struct {
 	UserPSK    []byte
 	LastActive atomic.Int64 // Unix timestamp in seconds
 
-	// identity hash of User in multi-user inbounds, to check on every
-	// packet that User has not been removed
 	userHash [AESBlockSize]byte
 
 	clientBodyCipher cipher.AEAD
@@ -161,11 +159,7 @@ func (m *UDPSessionManager) GetOrCreate(sessionID uint64) *ServerUDPSession {
 	return s
 }
 
-// Lookup returns the stored session for sessionID, or a new session that is
-// not stored yet (stored is false). The session ID comes from an
-// unauthenticated header, so callers must call Store only after the packet
-// is decrypted; otherwise any junk packet would leave a session until it
-// times out.
+// The ID is unauthenticated: call Store only after the packet decrypts.
 func (m *UDPSessionManager) Lookup(sessionID uint64) (s *ServerUDPSession, stored bool) {
 	now := time.Now().Unix()
 	if s, ok := m.sessions.Load(sessionID); ok {
@@ -180,9 +174,7 @@ func (m *UDPSessionManager) Lookup(sessionID uint64) (s *ServerUDPSession, store
 	return s, false
 }
 
-// Store stores a session returned by Lookup after packetID authenticated.
-// If the session was stored concurrently, the stored one wins and is
-// returned.
+// If stored concurrently, the stored session wins and is returned.
 func (m *UDPSessionManager) Store(s *ServerUDPSession, packetID uint64) *ServerUDPSession {
 	now := time.Now().Unix()
 	actual, loaded := m.sessions.LoadOrStore(s.SessionID, s)
@@ -221,8 +213,6 @@ func (m *UDPSessionManager) Delete(sessionID uint64) {
 	m.sessions.Delete(sessionID)
 }
 
-// Remove deletes s and closes it. A newer session stored under the same ID
-// is kept.
 func (m *UDPSessionManager) Remove(s *ServerUDPSession) {
 	m.sessions.CompareAndDelete(s.SessionID, s)
 	s.Close()
@@ -232,9 +222,7 @@ func (m *UDPSessionManager) EncodeServerPacket(method *CipherMethod, psk []byte,
 	return m.GetOrCreate(clientSessionID).EncodeResponse(method, psk, dest, payload)
 }
 
-// EncodeResponse encodes a server packet of s. Replies of a session must use
-// it rather than look the session up by ID: once the session has timed out
-// and been deleted, a lookup would store a new empty session.
+// Replies must use this, not a lookup by ID, which would store a new empty session.
 func (s *ServerUDPSession) EncodeResponse(method *CipherMethod, psk []byte, dest net.Destination, payload []byte) ([]byte, error) {
 	if err := s.EnsureServerState(method, psk); err != nil {
 		return nil, err

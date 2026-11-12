@@ -261,9 +261,7 @@ func (i *MultiUserInbound) processTCP(ctx context.Context, conn net.Conn, dispat
 		return err
 	}
 	if u, ok := i.usersByHash.Load(decryptedHash); !ok || u != user {
-		// The user was removed during the handshake. Checking after Dispatch
-		// means that closing the links of removed users right after removing
-		// them cannot miss this one.
+		// Checked after Dispatch so closing a removed user's links cannot miss this one.
 		common.Interrupt(link.Reader)
 		common.Interrupt(link.Writer)
 		return errors.New("user ", user.Email, " was removed")
@@ -315,9 +313,7 @@ func (i *MultiUserInbound) processUDP(ctx context.Context, conn stat.Connection,
 			currentUser, userPSK, userHash := sessionItem.sessionUser()
 			if currentUser != nil {
 				if u, ok := i.usersByHash.Load(userHash); !ok || u != currentUser {
-					// The user was removed: end its session now. Take the
-					// packet as the first of a new session, so that a user
-					// added back, for example with a new key, keeps working.
+					// The user was removed: end its session so a user added back starts a new one.
 					i.udpSessions.Remove(sessionItem)
 					sessionItem, stored = i.udpSessions.Lookup(sessionID)
 					currentUser, userPSK, userHash = sessionItem.sessionUser()

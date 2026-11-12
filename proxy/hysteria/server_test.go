@@ -20,8 +20,6 @@ import (
 	"github.com/xtls/xray-core/infra/conf/serial"
 )
 
-// startServer runs an instance with a first-generation inbound and returns its
-// port.
 func startServer(t *testing.T, auth, obfs string) int {
 	t.Helper()
 	certificate, _ := cert.MustGenerate(nil)
@@ -57,12 +55,10 @@ func startServer(t *testing.T, auth, obfs string) int {
 	return port
 }
 
-func mustJSON(v any) string {
+func mustJSON(v interface{}) string {
 	return string(common.Must2(json.Marshal(v)))
 }
 
-// startClientTo runs an instance that forwards a local port to target through
-// the first-generation server at 127.0.0.1:serverPort.
 func startClientTo(t *testing.T, serverPort int, auth, target, obfs string) int {
 	t.Helper()
 	targetHost, targetPort, _ := net.SplitHostPort(target)
@@ -161,9 +157,6 @@ func TestServerWrongAuthIsRefused(t *testing.T) {
 	}
 }
 
-// TestServerRawClient talks to the server with messages laid out by hand, so
-// the server is checked against the reference layout and not only against this
-// repository's own client.
 func TestServerRawClient(t *testing.T) {
 	serverPort := startServer(t, "secret", "")
 	echo := tcpEcho(t)

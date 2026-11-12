@@ -498,8 +498,6 @@ func TestClientUDPSessionMultiDestination(t *testing.T) {
 	}
 }
 
-// An AES UDP packet that fails authentication must not store a session,
-// or junk traffic would grow the session table until sessions time out.
 func TestUDPSessionStoredOnlyAfterAuth(t *testing.T) {
 	method, err := GetCipherMethod(MethodAES128GCM)
 	common.Must(err)
@@ -542,8 +540,6 @@ func TestUDPSessionStoredOnlyAfterAuth(t *testing.T) {
 	}
 }
 
-// A reply that comes after its session timed out must not store a new empty
-// session, which nothing would close until the next cleanup.
 func TestUDPResponseAfterSessionDeleted(t *testing.T) {
 	method, err := GetCipherMethod(MethodAES128GCM)
 	common.Must(err)
@@ -561,8 +557,6 @@ func TestUDPResponseAfterSessionDeleted(t *testing.T) {
 	}
 }
 
-// Removing a user must end its UDP sessions at once: the next packet of the
-// session is dropped. A user added back starts a new session.
 func TestMultiUserUDPSessionEndsOnRemove(t *testing.T) {
 	method, err := GetCipherMethod(MethodAES128GCM)
 	common.Must(err)

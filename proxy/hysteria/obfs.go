@@ -8,9 +8,6 @@ import (
 
 const xplusSaltLen = 16
 
-// xplusConn is the packet obfuscation of the first generation: each packet is
-// XORed with the SHA-256 of the pre-shared key followed by a per-packet random
-// salt, and carries that salt in front of it.
 type xplusConn struct {
 	net.PacketConn
 	key []byte
@@ -23,7 +20,6 @@ func newXPlusConn(raw net.PacketConn, password string) net.PacketConn {
 	return &xplusConn{PacketConn: raw, key: []byte(password)}
 }
 
-// mask XORs payload with the keystream of salt, in place.
 func (c *xplusConn) mask(salt, payload []byte) {
 	input := make([]byte, 0, len(c.key)+xplusSaltLen)
 	input = append(input, c.key...)

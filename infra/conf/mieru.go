@@ -12,20 +12,17 @@ import (
 )
 
 type MieruClientConfig struct {
-	Address *Address `json:"address"`
-	Port    uint16   `json:"port"`
-	// Inclusive "start-end" range, for servers listening on many ports.
-	// Mutually exclusive with Port.
-	PortRange    string `json:"portRange"`
-	Transport    string `json:"transport"`
-	Username     string `json:"username"`
-	Password     string `json:"password"`
-	Multiplexing string `json:"multiplexing"`
-	// "HANDSHAKE_STANDARD" (1-RTT) or "HANDSHAKE_NO_WAIT" (0-RTT).
-	HandshakeMode string `json:"handshakeMode"`
-	MTU           int32  `json:"mtu"`
-	Level         uint32 `json:"level"`
-	Email         string `json:"email"`
+	Address       *Address `json:"address"`
+	Port          uint16   `json:"port"`
+	PortRange     string   `json:"portRange"`
+	Transport     string   `json:"transport"`
+	Username      string   `json:"username"`
+	Password      string   `json:"password"`
+	Multiplexing  string   `json:"multiplexing"`
+	HandshakeMode string   `json:"handshakeMode"`
+	MTU           int32    `json:"mtu"`
+	Level         uint32   `json:"level"`
+	Email         string   `json:"email"`
 }
 
 func (c *MieruClientConfig) Build() (proto.Message, error) {
@@ -39,9 +36,6 @@ func (c *MieruClientConfig) Build() (proto.Message, error) {
 		return nil, errors.New("mieru: password is required")
 	}
 
-	// mieru speaks its own obfuscated transport rather than riding on Xray's,
-	// so this picks how the client reaches the server. It is unrelated to the
-	// network of the traffic being proxied.
 	transport, err := normalizeMieruTransport(c.Transport)
 	if err != nil {
 		return nil, err
@@ -101,26 +95,15 @@ func (c *MieruClientConfig) Build() (proto.Message, error) {
 	return cfg, nil
 }
 
-// MieruServerConfig is Inbound configuration.
-//
-// mieru binds its own sockets, so the listening port comes from the inbound
-// itself and the only thing settable here is how it listens. Users are usually
-// added at runtime through the handler service rather than listed up front,
-// which is why "clients" may be empty.
 type MieruServerConfig struct {
-	Users   []*MieruUserConfig `json:"users"`
-	Clients []*MieruUserConfig `json:"clients"`
-	// "TCP" or "UDP" — the underlay to accept on, not the network of the
-	// proxied traffic. Defaults to TCP when empty.
-	Transport string `json:"transport"`
-	// Applies to the UDP underlay only. Zero means mieru's default.
-	Mtu int32 `json:"mtu"`
-	// Accepted for symmetry with the outbound. Multiplexing is chosen by the
-	// client and negotiated in-band, so this is validated and otherwise unused.
+	Users     []*MieruUserConfig `json:"users"`
+	Clients   []*MieruUserConfig `json:"clients"`
+	Transport string             `json:"transport"`
+	Mtu       int32              `json:"mtu"`
+	// Validated only: the client negotiates multiplexing in-band.
 	Multiplexing string `json:"multiplexing"`
 }
 
-// MieruUserConfig is user configuration.
 type MieruUserConfig struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -172,9 +155,6 @@ func (c *MieruServerConfig) Build() (proto.Message, error) {
 	return config, nil
 }
 
-// normalizeMieruTransport upper-cases the underlay name so a config spelling it
-// in lower case is accepted rather than rejected for a difference that carries
-// no meaning.
 func normalizeMieruTransport(value string) (string, error) {
 	switch transport := strings.ToUpper(strings.TrimSpace(value)); transport {
 	case "":
@@ -196,7 +176,6 @@ func normalizeMieruMultiplexing(value string) (string, error) {
 	}
 }
 
-// parseMieruPortRange reads an inclusive "start-end" port range.
 func parseMieruPortRange(value string) (uint32, uint32, error) {
 	start, end, found := strings.Cut(strings.TrimSpace(value), "-")
 	if !found {

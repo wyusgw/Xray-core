@@ -200,8 +200,7 @@ type udpConn struct {
 	uplink           stats.Counter
 	downlink         stats.Counter
 	inactive         bool
-	// ctx and cancel are set under the worker's lock when the connection
-	// is created, so Close can cancel it from another goroutine.
+	// Set under the worker's lock so Close can cancel it from another goroutine.
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -295,9 +294,7 @@ type udpWorker struct {
 
 	checker    *task.Periodic
 	activeConn map[connID]*udpConn
-	// closed is set by Close, so a packet already being handled when the
-	// worker closes doesn't leave behind a connection nothing will close.
-	closed bool
+	closed     bool
 
 	ctx  context.Context
 	cone bool
@@ -481,9 +478,7 @@ func (w *udpWorker) Close() error {
 		}
 	}
 
-	// The checker no longer runs, so close the remaining connections here.
-	// Their handlers otherwise wait on reads that never end, keeping their
-	// goroutines and buffers for good.
+	// The checker no longer runs; close the rest or their handlers wait on reads forever.
 	w.closed = true
 	for id, conn := range w.activeConn {
 		conn.setInactive()

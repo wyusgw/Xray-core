@@ -9,21 +9,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// HysteriaClientConfig is the first Hysteria generation, the `hysteria`
-// outbound; the second generation is `hysteria2`.
 type HysteriaClientConfig struct {
-	Address *Address `json:"address"`
-	Port    uint16   `json:"port"`
-	Auth    string   `json:"auth"`
-	// Rates the client can send and receive, e.g. "20 mbps". Both are required.
-	Up   Bandwidth `json:"up"`
-	Down Bandwidth `json:"down"`
-	// "xplus" is the only obfuscation of this generation.
-	Obfs          string   `json:"obfs"`
-	ObfsPassword  string   `json:"obfsPassword"`
-	ServerName    string   `json:"serverName"`
-	AllowInsecure bool     `json:"allowInsecure"`
-	Alpn          []string `json:"alpn"`
+	Address       *Address  `json:"address"`
+	Port          uint16    `json:"port"`
+	Auth          string    `json:"auth"`
+	Up            Bandwidth `json:"up"`
+	Down          Bandwidth `json:"down"`
+	Obfs          string    `json:"obfs"`
+	ObfsPassword  string    `json:"obfsPassword"`
+	ServerName    string    `json:"serverName"`
+	AllowInsecure bool      `json:"allowInsecure"`
+	Alpn          []string  `json:"alpn"`
 }
 
 func (c *HysteriaClientConfig) Build() (proto.Message, error) {
@@ -69,16 +65,12 @@ func (c *HysteriaClientConfig) Build() (proto.Message, error) {
 	return config, nil
 }
 
-// HysteriaUserConfig is a user of the first Hysteria generation; Auth is the
-// secret its client sends.
 type HysteriaUserConfig struct {
 	Auth  string `json:"auth"`
 	Level uint32 `json:"level"`
 	Email string `json:"email"`
 }
 
-// HysteriaServerConfig is the first Hysteria generation, the `hysteria`
-// inbound; it needs the `hysteria` transport underneath.
 type HysteriaServerConfig struct {
 	Users   []*HysteriaUserConfig `json:"users"`
 	Clients []*HysteriaUserConfig `json:"clients"`

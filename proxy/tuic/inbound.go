@@ -287,8 +287,7 @@ func (i *Inbound) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
 	return nil
 }
 
-// storeUser adds u, replacing the old UUID of a re-added email. The caller
-// holds i.mu, except in NewServer.
+// storeUser must be called with i.mu held, except in NewServer.
 func (i *Inbound) storeUser(id uuid.UUID, u *protocol.MemoryUser) {
 	if u.Email != "" {
 		if old, ok := i.emails.Load(u.Email); ok && old.(uuid.UUID) != id {
@@ -299,8 +298,7 @@ func (i *Inbound) storeUser(id uuid.UUID, u *protocol.MemoryUser) {
 	i.userMap.Store(id, u)
 }
 
-// deleteUser removes id if it still belongs to email: a later AddUser may
-// have given the same UUID to another user.
+// deleteUser removes id only if it still belongs to email.
 func (i *Inbound) deleteUser(id uuid.UUID, email string) bool {
 	value, ok := i.userMap.Load(id)
 	if !ok || value.(*protocol.MemoryUser).Email != email {

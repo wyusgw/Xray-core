@@ -7,10 +7,6 @@ import (
 	"strconv"
 )
 
-// The messages of the first generation, as its reference implementation lays
-// them out: big endian, a bool as one byte, a string as a two-byte length
-// followed by its bytes.
-
 const (
 	protocolVersion = 3
 
@@ -20,8 +16,6 @@ const (
 	maxMessageLength = 0xFFFF
 )
 
-// writeClientHello writes the protocol version and the client hello: the rates
-// the client can send and receive, in bytes per second, and the secret.
 func writeClientHello(w io.Writer, sendBPS, recvBPS uint64, auth []byte) error {
 	if len(auth) > maxMessageLength {
 		return newError("auth is too long")
@@ -36,8 +30,6 @@ func writeClientHello(w io.Writer, sendBPS, recvBPS uint64, auth []byte) error {
 	return err
 }
 
-// readServerHello reads whether the client was accepted, the rate the server
-// can receive at, and the server's message.
 func readServerHello(r io.Reader) (ok bool, recvBPS uint64, message string, err error) {
 	var head [1 + 8 + 8 + 2]byte
 	if _, err = io.ReadFull(r, head[:]); err != nil {
@@ -50,8 +42,6 @@ func readServerHello(r io.Reader) (ok bool, recvBPS uint64, message string, err 
 	return head[0] != 0, binary.BigEndian.Uint64(head[9:17]), string(msg), nil
 }
 
-// writeRequest asks the server to connect to addr over TCP, or, with udp set,
-// to open a UDP session (whose address is then given per message).
 func writeRequest(w io.Writer, udp bool, addr string) error {
 	var host string
 	var port uint64
@@ -81,8 +71,6 @@ func writeRequest(w io.Writer, udp bool, addr string) error {
 	return err
 }
 
-// readResponse reads the server's answer to a request: whether it was
-// accepted, the UDP session it opened, and the server's message.
 func readResponse(r io.Reader) (ok bool, session uint32, message string, err error) {
 	var head [1 + 4 + 2]byte
 	if _, err = io.ReadFull(r, head[:]); err != nil {
@@ -95,7 +83,6 @@ func readResponse(r io.Reader) (ok bool, session uint32, message string, err err
 	return head[0] != 0, binary.BigEndian.Uint32(head[1:5]), string(msg), nil
 }
 
-// udpMessage is one datagram of a UDP session, or a fragment of one.
 type udpMessage struct {
 	SessionID uint32
 	Host      string
@@ -114,8 +101,6 @@ func (m *udpMessage) size() int {
 	return m.headerSize() + len(m.Data)
 }
 
-// serialize writes the message into dst and returns its length, or -1 when dst
-// is too small.
 func (m *udpMessage) serialize(dst []byte) int {
 	if len(dst) < m.size() {
 		return -1
@@ -157,7 +142,6 @@ func parseUDPMessage(b []byte) (*udpMessage, error) {
 	return m, nil
 }
 
-// fragment splits m into messages that each fit maxSize.
 func fragment(m udpMessage, maxSize int) []udpMessage {
 	if m.size() <= maxSize {
 		return []udpMessage{m}
@@ -183,8 +167,6 @@ func fragment(m udpMessage, maxSize int) []udpMessage {
 	return frags
 }
 
-// defragger puts a fragmented message back together; it keeps only the message
-// being assembled and drops one a newer message overtakes.
 type defragger struct {
 	msgID uint16
 	frags []*udpMessage

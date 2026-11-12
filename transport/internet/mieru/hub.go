@@ -22,14 +22,6 @@ import (
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
 
-// Listener runs a mieru Mux and feeds the connections it accepts to the inbound
-// handler.
-//
-// mieru binds its own sockets rather than riding on an Xray transport, so this
-// is a listener in name and shape only: the Mux owns the underlay, and what
-// comes out of Accept is an already-authenticated, already-decrypted stream. The
-// socks5 request that follows is read by proxy/mieru, the same split mieru's own
-// apis/server draws between Mux.Accept and Server.Accept.
 type Listener struct {
 	mux     *mieruprotocol.Mux
 	manager UserManager
@@ -48,24 +40,17 @@ func (l *Listener) Close() error {
 	var err error
 	l.closeOnce.Do(func() {
 		l.cancel()
-		// Detach first: the observer closes over the Mux, and the inbound outlives
-		// the listener when only the stream settings change on a reload.
+		// Detach first: the inbound outlives the listener when only stream settings change.
 		if l.manager != nil {
 			l.manager.SetMieruUserObserver(nil)
 		}
-		// Mux.Close closes the sessions one by one and waits up to a second
-		// on each for its close request to go out, so with many clients
-		// connected it takes minutes, and it only releases the port at the
-		// end. Free the port and drop the client connections now, so a
-		// reload can listen again at once and clients reconnect to it, and
-		// let the sessions close in the background.
+		// Mux.Close waits ~1s per session before freeing the port: free it and drop conns now.
 		err = l.sockets.closeAll()
 		go l.mux.Close()
 	})
 	return err
 }
 
-// Listen starts a mieru server on the inbound's address and port.
 func Listen(ctx context.Context, address net.Address, port net.Port, streamSettings *internet.MemoryStreamConfig, handler internet.ConnHandler) (internet.Listener, error) {
 	manager := UserManagerFromContext(ctx)
 	if manager == nil {
@@ -83,8 +68,7 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 		mtu = int(settings.MTU)
 	}
 
-	// Built here rather than with appctlcommon.PortBindingsToUnderlayProperties,
-	// which hardcodes 0.0.0.0 and would ignore the inbound's `listen` address.
+	// Not PortBindingsToUnderlayProperties, which hardcodes 0.0.0.0 and ignores `listen`.
 	listenIP := address.IP()
 	if address.Family().IsDomain() {
 		return nil, errors.New("mieru cannot listen on a domain address: ", address)
@@ -97,7 +81,6 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 		endpoint = mieruprotocol.NewUnderlayProperties(mtu, mierucommon.StreamTransport, &gonet.TCPAddr{IP: listenIP, Port: int(port)}, nil)
 	}
 
-	// mieru validates a nil pattern into its default rather than rejecting it.
 	pattern, err := trafficpattern.NewConfig(nil)
 	if err != nil {
 		return nil, errors.New("failed to build mieru traffic pattern").Base(err)
@@ -130,9 +113,6 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 		sockets: sockopt,
 	}
 
-	// This is what makes a panel-driven add or remove take effect without
-	// restarting the inbound: Mux accepts a new user map while it is running, and
-	// existing sessions keep their already-derived keys.
 	manager.SetMieruUserObserver(func(users []User) {
 		mux.SetServerUsers(toMieruUsers(users))
 	})
@@ -154,9 +134,7 @@ func (l *Listener) acceptLoop(ctx context.Context, handler internet.ConnHandler)
 			default:
 			}
 			errors.LogInfoInner(ctx, err, "failed to accept mieru connection")
-			// Mux.Accept only fails for good once the Mux is closed, and that path
-			// is covered above; a transient error here means one client, not the
-			// listener, so keep serving.
+			// Accept only fails for good after Close; here one client failed.
 			continue
 		}
 		if conn == nil {
@@ -172,11 +150,7 @@ func (l *Listener) acceptLoop(ctx context.Context, handler internet.ConnHandler)
 	}
 }
 
-// toMieruUsers converts the inbound's users into the map Mux keys on.
-//
-// Passwords stay in plaintext on purpose. mieru hashes them per connection, with
-// the user name as the salt, at the point the session key is derived; handing it
-// an already-hashed password would derive a different key than the client's.
+// Plaintext on purpose: mieru hashes it with the user name when deriving the key.
 func toMieruUsers(users []User) map[string]*appctlpb.User {
 	result := make(map[string]*appctlpb.User, len(users))
 	for _, user := range users {
@@ -191,20 +165,12 @@ func toMieruUsers(users []User) map[string]*appctlpb.User {
 	return result
 }
 
-// socketListener lets mieru bind through Xray's own listener stack, so an
-// inbound's `sockopt` (mark, bind-to-device, TCP fast open, ...) applies to the
-// mieru underlay the same way it would to any other transport.
 type socketListener struct {
 	ctx      context.Context
 	settings *internet.SocketConfig
 
-	// open holds the sockets bound so far, so Close can release the port
-	// without waiting for the Mux.
-	mu   sync.Mutex
-	open []io.Closer
-	// conns holds the stream connections accepted so far, so Close can drop
-	// them at once: clients then see the server go away and reconnect,
-	// instead of opening new sessions on a Mux that is shutting down.
+	mu    sync.Mutex
+	open  []io.Closer
 	conns sync.Map // *ingressConn -> struct{}
 }
 
@@ -225,7 +191,7 @@ func (l *socketListener) closeAll() error {
 			errs = append(errs, err)
 		}
 	}
-	l.conns.Range(func(k, _ any) bool {
+	l.conns.Range(func(k, _ interface{}) bool {
 		k.(*ingressConn).Close()
 		return true
 	})
@@ -263,9 +229,7 @@ func (l *socketListener) ListenPacket(ctx context.Context, network, address stri
 	return conn, nil
 }
 
-// contextOr prefers the listener's context. mieru passes context.Background()
-// here, which would drop the inbound tag and session data that ListenSystem's
-// hooks read.
+// mieru passes context.Background(), which drops what ListenSystem's hooks read.
 func (l *socketListener) contextOr(ctx context.Context) context.Context {
 	if l.ctx != nil {
 		return l.ctx

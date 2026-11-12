@@ -63,10 +63,6 @@ func (s *Server) RemoveUser(ctx context.Context, e string) error {
 	return s.validator.Del(e)
 }
 
-// RetireUsers records users that were removed before they could be removed
-// from s, for example while the process was not running. Requests from
-// their clients are then recognized and rejected cheaply instead of being
-// counted against the source IP.
 func (s *Server) RetireUsers(ctx context.Context, users []*protocol.MemoryUser) {
 	s.validator.Retire(users)
 }
@@ -154,14 +150,12 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			var err error
 
 			if inbound.User != nil && !s.validator.Has(inbound.User) {
-				// The user was removed: end its session and take the packet
-				// as a new one, so that a user added back keeps working.
+				// The user was removed: end its session so a user added back starts a new one.
 				udpServer.RemoveRay()
 				udpServer = udp.NewDispatcher(dispatcher, respond)
 				inbound.User = nil
 			}
 			if inbound.User != nil {
-				// The session user is known: decode with it, not the shared validator.
 				request, data, err = DecodeUDPPacketWithUser(inbound.User, payload)
 			} else {
 				request, data, err = DecodeUDPPacketWithCache(s.validator, payload, sourceIPKey(inbound))
@@ -258,9 +252,7 @@ func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dis
 		return err
 	}
 	if !s.validator.Has(request.User) {
-		// The user was removed during the handshake. Checking after Dispatch
-		// means that closing the links of removed users right after removing
-		// them cannot miss this one.
+		// Checked after Dispatch so closing a removed user's links cannot miss this one.
 		common.Interrupt(link.Reader)
 		common.Interrupt(link.Writer)
 		return errors.New("user ", request.User.Email, " was removed")
@@ -322,9 +314,7 @@ func init() {
 	}))
 }
 
-// sourceIPKey returns the user cache key: the client IP without the port.
-// Every TCP connection of a client has a new source port, so a key with the
-// port would never match.
+// Keyed by IP only: every TCP connection has a new source port.
 func sourceIPKey(inbound *session.Inbound) string {
 	if inbound == nil || !inbound.Source.IsValid() {
 		return ""

@@ -189,8 +189,6 @@ func (o *Outbound) processUDP(ctx context.Context, link *transport.Link, conn st
 	return nil
 }
 
-// Close releases the shared QUIC connection when the outbound handler is
-// removed (config reload / API call).
 func (o *Outbound) Close() error {
 	if o.client == nil {
 		return nil

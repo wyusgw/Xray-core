@@ -152,10 +152,7 @@ type Listener struct {
 	tr       *quic.Transport
 	listener *quic.Listener
 
-	// conns holds the client connections being served, so Close can close
-	// them with a CONNECTION_CLOSE. Closing the transport alone drops them
-	// silently, and clients keep using them until they time out instead of
-	// reconnecting.
+	// Tracked so Close can send CONNECTION_CLOSE; otherwise clients wait for a timeout.
 	connsMu sync.Mutex
 	conns   map[*quic.Conn]struct{}
 	closed  bool

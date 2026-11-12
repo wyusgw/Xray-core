@@ -31,22 +31,11 @@ func init() {
 	}))
 }
 
-// handshakeTimeout bounds the wait for the socks5 request that follows a mieru
-// handshake, matching what mieru's own server allows.
 const handshakeTimeout = 10 * time.Second
 
-// Inbound is the mieru server.
-//
-// The authentication and the crypto live in transport/internet/mieru, because
-// mieru binds its own sockets and hands back streams that are already decrypted
-// and already attributed to a user. What is left here is the socks5 request that
-// rides the stream — the same split mieru's own apis/server draws between
-// Mux.Accept and Server.Accept.
 type Inbound struct {
 	config *ServerConfig
 
-	// Two indexes over the same users: the handler service keys on email, mieru
-	// keys on user name. Both are needed, so both are kept.
 	mu       sync.RWMutex
 	byEmail  map[string]*protocol.MemoryUser
 	byName   map[string]*protocol.MemoryUser
@@ -75,13 +64,10 @@ func (i *Inbound) Network() []net.Network {
 	return []net.Network{net.Network_TCP}
 }
 
-// MieruInboundUserManager hands the listener the live user set. It is called
-// from app/proxyman/inbound/worker.go before the transport starts listening.
 func (i *Inbound) MieruInboundUserManager() mierutransport.UserManager {
 	return i
 }
 
-// MieruInboundSettings are the protocol settings the listener needs.
 func (i *Inbound) MieruInboundSettings() mierutransport.ServerSettings {
 	return mierutransport.ServerSettings{
 		Transport: i.config.GetTransport(),
@@ -98,19 +84,12 @@ func (i *Inbound) Process(ctx context.Context, network net.Network, connection s
 	inbound.Name = protocolName
 	inbound.CanSpliceCopy = 3
 
-	// The request has to be read before the user can be recovered. On the stream
-	// underlay mieru only attaches the user name to the session once it has
-	// decrypted a segment, so asking any earlier gets an empty name even though
-	// the handshake did authenticate — which is why mieru's own apis/server does
-	// the same read inside Accept before handing the connection over.
+	// mieru names the session's user only after decrypting a segment: read the request first.
 	request, err := readRequest(connection)
 	if err != nil {
 		return errors.New("failed to read mieru socks5 request").Base(err)
 	}
 
-	// Recovering which user it was is what makes the traffic countable against
-	// them. The connection is already authenticated by this point: it decrypted,
-	// so it matched a registered password.
 	conn := stat.TryUnwrapStatsConn(connection)
 	if named, ok := conn.(apicommon.UserContext); ok {
 		if user := i.userByName(named.UserName()); user != nil {
@@ -143,10 +122,7 @@ func (i *Inbound) Process(ctx context.Context, network net.Network, connection s
 }
 
 func (i *Inbound) processTCP(ctx context.Context, conn stat.Connection, destination net.Destination, dispatcher routing.Dispatcher) error {
-	// mieru's client waits for this reply before it sends payload unless the
-	// profile asked for a 0-RTT handshake, and even then it reads one. Xray only
-	// learns whether the destination is reachable after the dispatcher has run,
-	// so report success here the way a socks5 proxy with a deferred dial does.
+	// mieru's client waits for this reply; reachability is only known after dispatch.
 	if err := writeReply(conn, constant.Socks5ReplySuccess); err != nil {
 		return errors.New("failed to write mieru socks5 response").Base(err)
 	}
@@ -168,9 +144,6 @@ func (i *Inbound) processUDP(ctx context.Context, conn stat.Connection, destinat
 	ctx = withAccessMessage(ctx, conn, destination)
 	errors.LogInfo(ctx, "tunneling mieru request to udp:", destination)
 
-	// The packets keep their boundaries inside the stream, and each one carries
-	// its own destination in a socks5 UDP-associate header — the mirror of what
-	// the outbound in client.go builds.
 	tunnel := apicommon.NewPacketOverStreamTunnel(conn)
 	return dispatcher.DispatchLink(ctx, destination, &transport.Link{
 		Reader: &serverUDPPacketReader{tunnel: tunnel, destination: destination},
@@ -178,7 +151,6 @@ func (i *Inbound) processUDP(ctx context.Context, conn stat.Connection, destinat
 	})
 }
 
-// readRequest reads the socks5 request that follows the mieru handshake.
 func readRequest(conn stat.Connection) (*model.Request, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(handshakeTimeout)); err == nil {
 		defer conn.SetReadDeadline(time.Time{})
@@ -190,9 +162,6 @@ func readRequest(conn stat.Connection) (*model.Request, error) {
 	return request, nil
 }
 
-// writeReply answers the socks5 request. The bind address is always zero: the
-// dispatcher picks the outgoing socket, and mieru's client ignores the field for
-// a CONNECT and rewrites the port for an associate.
 func writeReply(conn stat.Connection, reply byte) error {
 	return model.WriteSocks5Response(conn, reply, model.AddrSpec{IP: gonet.IPv4zero, Port: 0})
 }
@@ -210,8 +179,6 @@ func withAccessMessage(ctx context.Context, conn stat.Connection, destination ne
 	})
 }
 
-// toDestination converts a socks5 address, leaving a domain name unresolved so
-// routing and DNS rules see it.
 func toDestination(addr model.AddrSpec, network net.Network) net.Destination {
 	port := net.Port(addr.Port)
 	if addr.FQDN != "" {
@@ -223,16 +190,12 @@ func toDestination(addr model.AddrSpec, network net.Network) net.Destination {
 	return net.Destination{Network: network, Address: net.IPAddress(addr.IP), Port: port}
 }
 
-// serverUDPPacketReader turns the client's socks5 UDP datagrams into buffers tagged
-// with the destination each one asked for.
 type serverUDPPacketReader struct {
 	tunnel      *apicommon.PacketOverStreamTunnel
 	destination net.Destination
 }
 
 func (r *serverUDPPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	// A datagram carries its header inline, so the read has to be able to hold a
-	// maximum-size packet plus that header rather than a single buf.Buffer.
 	scratch := make([]byte, 65535)
 	n, err := r.tunnel.Read(scratch)
 	if err != nil {
@@ -272,8 +235,6 @@ func (r *serverUDPPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	return buf.MultiBuffer{buffer}, nil
 }
 
-// serverUDPPacketWriter sends replies back with the origin of each packet in its
-// header, which is how the client tells apart answers from different peers.
 type serverUDPPacketWriter struct {
 	tunnel      *apicommon.PacketOverStreamTunnel
 	destination net.Destination
@@ -317,7 +278,6 @@ func (w *serverUDPPacketWriter) Close() error {
 	return w.tunnel.Close()
 }
 
-// MieruUsers implements transport/internet/mieru.UserManager.
 func (i *Inbound) MieruUsers() []mierutransport.User {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
@@ -336,22 +296,18 @@ func (i *Inbound) mieruUsersLocked() []mierutransport.User {
 	return users
 }
 
-// SetMieruUserObserver implements transport/internet/mieru.UserManager.
 func (i *Inbound) SetMieruUserObserver(observer func([]mierutransport.User)) {
 	i.mu.Lock()
 	i.observer = observer
 	users := i.mieruUsersLocked()
 	i.mu.Unlock()
 
-	// Push the current set straight away: the listener may have been rebuilt
-	// while users were being added, and this is cheaper than making it ask.
 	if observer != nil {
 		observer(users)
 	}
 }
 
-// notify hands the listener the new user set. It must be called without the
-// lock held, because the listener re-enters mieru while it applies them.
+// notify must be called without i.mu: the listener re-enters mieru.
 func (i *Inbound) notify() {
 	i.mu.RLock()
 	observer := i.observer
@@ -371,9 +327,6 @@ func (i *Inbound) userByName(name string) *protocol.MemoryUser {
 	return i.byName[name]
 }
 
-// addUser indexes a user under both keys. The caller holds no lock on the first
-// call from NewServer, which is safe because nothing else can see the inbound
-// yet; AddUser below takes the lock itself.
 func (i *Inbound) addUser(user *protocol.MemoryUser) error {
 	account, ok := user.Account.(*MemoryAccount)
 	if !ok {
@@ -389,8 +342,6 @@ func (i *Inbound) addUser(user *protocol.MemoryUser) error {
 	return nil
 }
 
-// AddUser implements proxy.UserManager. A user added here can connect
-// immediately: the listener is handed the new set without being restarted.
 func (i *Inbound) AddUser(ctx context.Context, user *protocol.MemoryUser) error {
 	account, ok := user.Account.(*MemoryAccount)
 	if !ok {
@@ -416,9 +367,7 @@ func (i *Inbound) AddUser(ctx context.Context, user *protocol.MemoryUser) error 
 	return nil
 }
 
-// RemoveUser implements proxy.UserManager. Existing sessions of a removed user
-// are left alone — mieru derives their keys at handshake time — but no new
-// session can be opened.
+// Existing sessions keep their derived keys; only new sessions are refused.
 func (i *Inbound) RemoveUser(ctx context.Context, email string) error {
 	if email == "" {
 		return errors.New("email must not be empty")

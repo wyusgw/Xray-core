@@ -376,8 +376,6 @@ func TestRelayTCPHandshakeForwarding(t *testing.T) {
 	}
 }
 
-// Packets of one session can be handled concurrently; setting up its link
-// must not race with refreshing its timer.
 func TestUDPSessionEnsureLinkConcurrent(t *testing.T) {
 	m := NewUDPSessionManager(time.Minute)
 	s := m.GetOrCreate(1)

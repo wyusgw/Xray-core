@@ -11,47 +11,30 @@ import (
 )
 
 const (
-	// An IP with more users than this is taken as a relay, and its users
-	// are no longer cached by IP: trying them all first would only slow
-	// down its other clients.
 	relayDetectionThreshold = 6
 
-	// Users that have not matched for this long leave the recent users,
-	// so that they do not grow into the full user list.
 	successUserTTL = 30 * time.Minute
 
-	// How often the recent users snapshot is rebuilt.
 	recentRebuildInterval = time.Second
 
-	// How often a cached IP is moved to the front of its LRU list.
 	lruUpdateInterval = 5 * time.Second
 
 	userCacheShards = 32
 )
 
-// UserCache speeds up matching multi-user AEAD requests, which carry no user
-// ID, by trying likely users before all of them:
-//  1. users that matched from the same source IP (LRU, sharded by IP)
-//  2. users that matched recently from any IP, most recent first, for
-//     clients whose IP changes
 type UserCache struct {
 	ipShards [userCacheShards]*userCacheShard
 	recent   recentUsers
 }
 
-// recentUsers holds the users that matched in the last successUserTTL.
 type recentUsers struct {
 	users sync.Map // email -> *successUserEntry
 
-	// snapshot of users sorted by last match, most recent first; rebuilt at
-	// most every recentRebuildInterval and read without locking
 	sorted     atomic.Pointer[[]*successUserEntry]
 	builtAt    atomic.Int64
 	rebuilding atomic.Bool
 }
 
-// successUserEntry is immutable except for lastAccess. When the user object
-// changes, the whole entry is replaced.
 type successUserEntry struct {
 	user       *protocol.MemoryUser
 	lastAccess atomic.Int64 // UnixNano time of the last match
@@ -68,7 +51,7 @@ type cacheEntry struct {
 	users      []*protocol.MemoryUser
 	node       *cacheNode
 	lastAccess int64 // UnixNano time of the last LRU update
-	isRelay    bool  // users are no longer cached for this IP
+	isRelay    bool
 }
 
 type cacheNode struct {
@@ -77,14 +60,12 @@ type cacheNode struct {
 	next *cacheNode
 }
 
-// cacheList is a doubly linked LRU list with sentinel head and tail nodes.
 type cacheList struct {
 	head *cacheNode
 	tail *cacheNode
 	size int
 }
 
-// NewUserCache creates a UserCache that caches up to about capacity IPs.
 func NewUserCache(capacity int) *UserCache {
 	if capacity <= 0 {
 		capacity = 16384
@@ -102,20 +83,15 @@ func NewUserCache(capacity int) *UserCache {
 	return c
 }
 
-// GetMultiUser returns the users that matched from IP key. It returns nil
-// for relays.
 func (c *UserCache) GetMultiUser(key string) []*protocol.MemoryUser {
 	return c.getShard(key).getMultiUser(key)
 }
 
-// PutWithSuccess records that user matched from IP key.
 func (c *UserCache) PutWithSuccess(key string, user *protocol.MemoryUser) {
 	c.getShard(key).putMultiUser(key, user)
 	c.recent.add(user)
 }
 
-// Remove drops the user with the given email from the cache. The email must
-// be the same as the cached user's.
 func (c *UserCache) Remove(email string) {
 	if email == "" {
 		return
@@ -126,11 +102,7 @@ func (c *UserCache) Remove(email string) {
 	c.recent.users.Delete(email)
 }
 
-// RecentUsers returns the users that matched in the last successUserTTL,
-// most recent first. The result is a shared snapshot that must not be
-// modified. A user that just matched may be missing for up to
-// recentRebuildInterval, and a removed user may stay as long, so callers
-// must check that a user is still valid.
+// The snapshot is shared and lags; callers must not modify it and must recheck users.
 func (c *UserCache) RecentUsers() []*successUserEntry {
 	return c.recent.snapshot()
 }
@@ -154,13 +126,10 @@ func (s *userCacheShard) getMultiUser(key string) []*protocol.MemoryUser {
 	lastAccess := entry.lastAccess
 	s.mu.RUnlock()
 
-	// Update the LRU order only now and then, to take the write lock less.
 	now := time.Now().UnixNano()
 	if now-lastAccess > int64(lruUpdateInterval) {
 		s.mu.Lock()
-		// The entry may have been updated, evicted or removed after the
-		// read lock was released. Moving an evicted node would put it back
-		// into the list and corrupt it.
+		// Recheck after relocking: moving an evicted node would corrupt the list.
 		if s.cache[key] == entry && now-entry.lastAccess > int64(lruUpdateInterval) {
 			s.list.moveToFront(entry.node)
 			entry.lastAccess = now
@@ -211,13 +180,10 @@ func (s *userCacheShard) removeByEmail(email string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// A user can be cached under many IPs. Every entry must be dropped, or a
-	// removed user would still be cached.
 	for key, entry := range s.cache {
 		entry.users = slices.DeleteFunc(entry.users, func(u *protocol.MemoryUser) bool {
 			return u.Email == email
 		})
-		// Relay entries have no users: keep them to remember the relay.
 		if len(entry.users) == 0 && !entry.isRelay {
 			s.list.remove(entry.node)
 			delete(s.cache, key)
@@ -235,8 +201,7 @@ func (r *recentUsers) add(user *protocol.MemoryUser) {
 			entry.lastAccess.Store(now)
 			return
 		}
-		// The user object changed, for example its password: replace the
-		// entry rather than modify it under concurrent readers.
+		// Replace rather than modify: readers hold the entry without the lock.
 	}
 	entry := &successUserEntry{user: user}
 	entry.lastAccess.Store(now)
@@ -249,7 +214,6 @@ func (r *recentUsers) snapshot() []*successUserEntry {
 	if snap != nil && now-r.builtAt.Load() < int64(recentRebuildInterval) {
 		return *snap
 	}
-	// Only one goroutine rebuilds; the others use the old snapshot.
 	if !r.rebuilding.CompareAndSwap(false, true) {
 		if snap != nil {
 			return *snap
@@ -258,8 +222,7 @@ func (r *recentUsers) snapshot() []*successUserEntry {
 	}
 	defer r.rebuilding.Store(false)
 
-	// Sort by the times read here, so that concurrent updates cannot make
-	// the comparisons inconsistent.
+	// Sort on times read here so concurrent updates cannot break the comparison.
 	type stamped struct {
 		entry *successUserEntry
 		at    int64
@@ -268,7 +231,7 @@ func (r *recentUsers) snapshot() []*successUserEntry {
 	if snap != nil {
 		live = make([]stamped, 0, len(*snap))
 	}
-	r.users.Range(func(key, value any) bool {
+	r.users.Range(func(key, value interface{}) bool {
 		entry := value.(*successUserEntry)
 		if at := entry.lastAccess.Load(); now-at > int64(successUserTTL) {
 			r.users.CompareAndDelete(key, entry)

@@ -7,18 +7,11 @@ import (
 )
 
 const (
-	// How long the key of a removed user is kept.
-	retiredUserTTL = 7 * 24 * time.Hour
-	// Keys of removed users kept at most.
+	retiredUserTTL  = 7 * 24 * time.Hour
 	maxRetiredUsers = 10000
 )
 
-// retiredUsers keeps the keys of removed users. Most requests that match no
-// user come from clients of expired users that keep reconnecting. Matching
-// them against these keys tells them apart from other failures, so they can
-// be rejected cheaply without limiting other clients behind the same IP.
-//
-// It is guarded by the Validator lock.
+// retiredUsers is guarded by the Validator lock.
 type retiredUsers struct {
 	byKey map[string]*retiredUser
 	list  []*retiredUser // oldest first, may hold dropped entries
@@ -38,7 +31,6 @@ func retiredKey(u *protocol.MemoryUser) (string, bool) {
 	return string(account.Key), true
 }
 
-// add records that u was removed.
 func (r *retiredUsers) add(u *protocol.MemoryUser, now time.Time) {
 	key, ok := retiredKey(u)
 	if !ok {
@@ -56,8 +48,6 @@ func (r *retiredUsers) add(u *protocol.MemoryUser, now time.Time) {
 	r.prune(now)
 }
 
-// remove forgets the removed user with the same key as u, which is in use
-// again.
 func (r *retiredUsers) remove(u *protocol.MemoryUser) {
 	key, ok := retiredKey(u)
 	if !ok {
@@ -69,7 +59,6 @@ func (r *retiredUsers) remove(u *protocol.MemoryUser) {
 	}
 }
 
-// contains reports whether u is still a removed user.
 func (r *retiredUsers) contains(u *protocol.MemoryUser) bool {
 	key, ok := retiredKey(u)
 	if !ok {
@@ -104,7 +93,6 @@ func (r *retiredUsers) prune(now time.Time) {
 	}
 }
 
-// match returns the removed user whose key opens the request, if any.
 func (r *retiredUsers) match(t *trialDecrypter, now time.Time) *protocol.MemoryUser {
 	expired := now.Add(-retiredUserTTL).UnixNano()
 	for i := len(r.list) - 1; i >= 0; i-- {

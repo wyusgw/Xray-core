@@ -38,8 +38,6 @@ func tuicLogConfig() []*serial.TypedMessage {
 	}
 }
 
-// tuicStreamConfig is the "network": "tuic" transport both sides have to use;
-// TUIC is a QUIC protocol, so TLS is mandatory rather than optional.
 func tuicStreamConfig(securitySettings *serial.TypedMessage) *internet.StreamConfig {
 	return &internet.StreamConfig{
 		ProtocolName:     "tuic",
@@ -144,7 +142,6 @@ func TestTUICTCP(t *testing.T) {
 
 	var errGroup errgroup.Group
 	for range 3 {
-		// All three requests share one QUIC connection.
 		errGroup.Go(testTCPConn(clientPort, 10240, time.Second*20))
 	}
 	if err := errGroup.Wait(); err != nil {

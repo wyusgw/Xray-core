@@ -52,8 +52,6 @@ func (w countingWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 
 func (countingWriter) Close() error { return nil }
 
-// Removing a user must end its UDP session: the next packet is not decoded
-// with the removed user. A user added back starts a new session.
 func TestUDPSessionEndsOnRemove(t *testing.T) {
 	s := &Server{validator: new(Validator), policyManager: policy.DefaultManager{}, cone: true}
 	u := testUser(1)

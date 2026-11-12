@@ -48,7 +48,6 @@ func TestScanLimiter(t *testing.T) {
 		t.Fatal("other IP blocked")
 	}
 
-	// Tokens refill over time.
 	s := l.shard(ip)
 	s.buckets[ip].last -= int64(scanRefill)
 	if !l.Allow(ip) {
@@ -89,15 +88,12 @@ func TestValidatorFullScanLimited(t *testing.T) {
 		t.Fatal("expired client not limited")
 	}
 
-	// Other IPs are not affected.
 	good := testUser(42)
 	u, _, _, _, err := v.GetWithCache(udpPacketFor(t, good), protocol.RequestCommandUDP, "198.51.100.8")
 	if err != nil || u.Email != good.Email {
 		t.Fatalf("good user from clean IP: user=%v err=%v", u, err)
 	}
 
-	// A recent user still gets through from a throttled IP once the
-	// recent-user snapshot is rebuilt.
 	time.Sleep(recentRebuildInterval + 50*time.Millisecond)
 	u, _, _, _, err = v.GetWithCache(udpPacketFor(t, good), protocol.RequestCommandUDP, badIP)
 	if err != nil || u.Email != good.Email {
@@ -174,7 +170,6 @@ func BenchmarkExpiredClientFullScan(b *testing.B) {
 	})
 }
 
-// fillRecent makes users the recent users, users[0] the most recent.
 func fillRecent(v *Validator, users []*protocol.MemoryUser) {
 	now := time.Now().UnixNano()
 	for i, u := range users {

@@ -8,14 +8,9 @@ import (
 
 var ssSubkeyInfo = []byte("ss-subkey")
 
-// subkeyKDF derives the same subkeys as hkdfSHA1 for one salt and many
-// secrets, which is what finding a multi-user connection's user takes: one
-// derivation per candidate user. hkdfSHA1 builds two HMACs per call; here
-// the salt-keyed extract HMAC is built once and the expand HMAC reuses two
-// SHA-1 states, so a derivation allocates nothing.
 type subkeyKDF struct {
-	extract      hash.Hash // HMAC-SHA1 keyed with the salt
-	inner, outer hash.Hash // SHA-1 states for the expand HMAC, keyed with the PRK
+	extract      hash.Hash
+	inner, outer hash.Hash
 	ipad, opad   [sha1.BlockSize]byte
 	prk, t       [sha1.Size]byte
 	counter      [1]byte
@@ -29,14 +24,11 @@ func newSubkeyKDF(salt []byte) *subkeyKDF {
 	}
 }
 
-// derive writes HKDF-SHA1(secret, salt, "ss-subkey") into out.
 func (k *subkeyKDF) derive(secret, out []byte) {
 	k.extract.Reset()
 	k.extract.Write(secret)
 	prk := k.extract.Sum(k.prk[:0])
 
-	// HMAC with a key shorter than the block: the key zero-padded to the
-	// block size, XORed with the pads.
 	for i := range k.ipad {
 		var b byte
 		if i < len(prk) {
@@ -46,7 +38,6 @@ func (k *subkeyKDF) derive(secret, out []byte) {
 		k.opad[i] = b ^ 0x5c
 	}
 
-	// T(i) = HMAC(PRK, T(i-1) | info | i), with T(0) empty.
 	var prev []byte
 	for n := 0; n < len(out); {
 		k.counter[0]++

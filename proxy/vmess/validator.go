@@ -79,8 +79,6 @@ func (v *TimedUserValidator) GetAEAD(userHash []byte) (*protocol.MemoryUser, boo
 	return v.GetAEADFrom(userHash, "")
 }
 
-// GetAEADFrom is GetAEAD for a connection from source, the client's IP or
-// "" if unknown.
 func (v *TimedUserValidator) GetAEADFrom(userHash []byte, source string) (*protocol.MemoryUser, bool, error) {
 	v.RLock()
 	defer v.RUnlock()

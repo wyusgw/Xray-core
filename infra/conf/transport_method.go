@@ -751,8 +751,6 @@ type Masquerade struct {
 	StatusCode int32             `json:"statusCode"`
 }
 
-// HysteriaConfig is the first Hysteria generation, the `hysteria` transport of
-// an inbound.
 type HysteriaConfig struct {
 	Obfs         string `json:"obfs"`
 	ObfsPassword string `json:"obfsPassword"`

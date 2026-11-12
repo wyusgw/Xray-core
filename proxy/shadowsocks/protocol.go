@@ -58,9 +58,6 @@ func ReadTCPSession(validator *Validator, reader io.Reader) (*protocol.RequestHe
 	return ReadTCPSessionWithCache(validator, reader, "")
 }
 
-// ReadTCPSessionWithCache is like ReadTCPSession, but uses cacheKey (the
-// client IP without the port) to find the user. An empty cacheKey disables
-// the cache.
 func ReadTCPSessionWithCache(validator *Validator, reader io.Reader, cacheKey string) (*protocol.RequestHeader, buf.Reader, error) {
 	behaviorSeed := validator.GetBehaviorSeed()
 	drainer, errDrain := drain.NewBehaviorSeedLimitedDrainer(int64(behaviorSeed), 16+38, 3266, 64)
@@ -238,15 +235,12 @@ func DecodeUDPPacket(validator *Validator, payload *buf.Buffer) (*protocol.Reque
 	return DecodeUDPPacketWithCache(validator, payload, "")
 }
 
-// DecodeUDPPacketWithUser decodes a UDP packet of a known user, without
-// looking it up in the Validator.
 func DecodeUDPPacketWithUser(user *protocol.MemoryUser, payload *buf.Buffer) (*protocol.RequestHeader, *buf.Buffer, error) {
 	account, ok := user.Account.(*MemoryAccount)
 	if !ok {
 		return nil, nil, errors.New("expected MemoryAccount returned from validator")
 	}
 
-	// Decrypt in place with the account cipher, as DecodeUDPPacket does.
 	if account.Cipher.IsAEAD() {
 		if err := account.Cipher.DecodePacket(account.Key, payload); err != nil {
 			return nil, nil, errors.New("failed to decrypt UDP payload").Base(err)
@@ -280,9 +274,6 @@ func DecodeUDPPacketWithUser(user *protocol.MemoryUser, payload *buf.Buffer) (*p
 	return request, payload, nil
 }
 
-// DecodeUDPPacketWithCache is like DecodeUDPPacket, but uses cacheKey (the
-// client IP without the port) to find the user. An empty cacheKey disables
-// the cache.
 func DecodeUDPPacketWithCache(validator *Validator, payload *buf.Buffer, cacheKey string) (*protocol.RequestHeader, *buf.Buffer, error) {
 	rawPayload := payload.Bytes()
 	user, _, d, _, err := validator.GetWithCache(rawPayload, protocol.RequestCommandUDP, cacheKey)

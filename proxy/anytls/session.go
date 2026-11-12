@@ -283,9 +283,6 @@ func (s *session) handleUDPFrame(ctx context.Context, st *stream, body buf.Multi
 	}
 }
 
-// handleUoTDownlink unpacks the packets the server sends back on a client
-// UDP stream. The client opens it with a connect request, so each packet is
-// a 2-byte length and the payload, with no address.
 func (s *session) handleUoTDownlink(st *stream, body buf.MultiBuffer) error {
 	st.uotInput = appendMultiBuffer(st.uotInput, body)
 	for len(st.uotInput) >= 2 {

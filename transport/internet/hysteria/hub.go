@@ -28,17 +28,12 @@ type Listener struct {
 	tr       *quic.Transport
 	listener *quic.Listener
 
-	// conns holds the client connections being served, so Close can close
-	// them with a CONNECTION_CLOSE. Closing the transport alone drops them
-	// silently, and clients keep using them until they time out instead of
-	// reconnecting.
+	// Tracked so Close can send CONNECTION_CLOSE; otherwise clients wait for a timeout.
 	connsMu sync.Mutex
 	conns   map[*quic.Conn]struct{}
 	closed  bool
 }
 
-// handleClient runs one client's QUIC connection: the hello on its first
-// stream, then a stream for each connection or UDP session.
 func (l *Listener) handleClient(conn *quic.Conn) {
 	ctx := context.Background()
 	openCtx, cancel := context.WithTimeout(ctx, controlTimeout)
@@ -81,8 +76,6 @@ func (l *Listener) handleClient(conn *quic.Conn) {
 	}
 }
 
-// useCongestion sets the pace of the server's sending: the rate the client said
-// it can receive at, held to the server's own limit.
 func (l *Listener) useCongestion(conn *quic.Conn, clientRecv uint64) {
 	p := l.quicParams
 	rate := clientRecv

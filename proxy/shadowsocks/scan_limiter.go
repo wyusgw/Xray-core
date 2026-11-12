@@ -8,32 +8,18 @@ import (
 	"github.com/xtls/xray-core/common/protocol"
 )
 
-// A multi-user AEAD request that misses the caches is matched by trying every
-// user, which costs time proportional to the number of users. Clients of
-// expired users and probes do this on every attempt. Clients of removed users
-// are recognized by their keys (see retiredUsers) and remembered per IP.
-// scanLimiter gives each source IP a token bucket that only full scans
-// matching nobody spend, so other clients behind a relay are not affected.
-// An IP without tokens skips the full scan and only tries its cached users
-// and the scanLimitedRecentUsers most recent users.
+// scanLimiter limits per source IP the full scans that match nobody, so other clients
+// behind a relay are unaffected; a throttled IP only tries cached and recent users.
 const (
-	// Full scans are not limited below this many keys (users and removed
-	// users).
 	scanLimitMinUsers = 256
 
-	// Failed full scans an IP can make in a row.
-	scanBurst = 8
-	// Time to regain one full scan.
+	scanBurst  = 8
 	scanRefill = 2 * time.Second
 
-	// Recent users tried by a throttled IP.
 	scanLimitedRecentUsers = 64
 
-	scanShards = 32
-	// IPs tracked per shard: at most about 130k IPs.
-	scanShardCap = 4096
-	// Removed users remembered per IP, enough for a relay in front of
-	// many expired clients.
+	scanShards      = 32
+	scanShardCap    = 4096
 	maxRetiredPerIP = 32
 )
 
@@ -41,7 +27,6 @@ type scanBucket struct {
 	tokens float64
 	last   int64 // UnixNano time of tokens
 
-	// removed users whose clients connect from this IP, most recent last
 	retired []*protocol.MemoryUser
 }
 
@@ -71,7 +56,6 @@ func (l *scanLimiter) shard(key string) *scanShard {
 	return &l.shards[h%scanShards]
 }
 
-// refilled returns the tokens b has at now.
 func (b *scanBucket) refilled(now int64) float64 {
 	t := b.tokens + float64(now-b.last)/float64(scanRefill)
 	if t > scanBurst {
@@ -80,7 +64,6 @@ func (b *scanBucket) refilled(now int64) float64 {
 	return t
 }
 
-// Allow reports whether key may make a full scan now.
 func (l *scanLimiter) Allow(key string) bool {
 	if key == "" {
 		return true
@@ -95,7 +78,6 @@ func (l *scanLimiter) Allow(key string) bool {
 	return b.refilled(time.Now().UnixNano()) >= 1
 }
 
-// Fail records a failed full scan from key.
 func (l *scanLimiter) Fail(key string) {
 	if key == "" {
 		return
@@ -112,7 +94,6 @@ func (l *scanLimiter) Fail(key string) {
 	b.last = now
 }
 
-// Success forgets the failures of key.
 func (l *scanLimiter) Success(key string) {
 	if key == "" {
 		return
@@ -131,7 +112,6 @@ func (l *scanLimiter) Success(key string) {
 	b.tokens = scanBurst // keep the removed users for other clients of the IP
 }
 
-// Retired returns the removed users seen from key.
 func (l *scanLimiter) Retired(key string) []*protocol.MemoryUser {
 	if key == "" {
 		return nil
@@ -145,8 +125,6 @@ func (l *scanLimiter) Retired(key string) []*protocol.MemoryUser {
 	return nil
 }
 
-// AddRetired records that a client of the removed user u connects from key.
-// This is not a failure: it does not spend a token.
 func (l *scanLimiter) AddRetired(key string, u *protocol.MemoryUser) {
 	if key == "" {
 		return
@@ -162,7 +140,6 @@ func (l *scanLimiter) AddRetired(key string, u *protocol.MemoryUser) {
 	b.retired = append(b.retired, u)
 }
 
-// DropRetired forgets u for key, as it is no longer a removed user.
 func (l *scanLimiter) DropRetired(key string, u *protocol.MemoryUser) {
 	s := l.shard(key)
 	s.mu.Lock()
@@ -172,8 +149,7 @@ func (l *scanLimiter) DropRetired(key string, u *protocol.MemoryUser) {
 	}
 }
 
-// bucket returns the bucket of key, creating a full one if needed.
-// It must be called with s.mu held.
+// bucket must be called with s.mu held.
 func (s *scanShard) bucket(key string, now int64) *scanBucket {
 	b, ok := s.buckets[key]
 	if !ok {
@@ -186,9 +162,7 @@ func (s *scanShard) bucket(key string, now int64) *scanBucket {
 	return b
 }
 
-// evict makes room in a full shard. It drops buckets that have refilled and
-// remember no removed users, which is the same as having no record, then
-// random ones if needed. It must be called with s.mu held.
+// evict must be called with s.mu held.
 func (s *scanShard) evict(now int64) {
 	for k, b := range s.buckets {
 		if b.refilled(now) >= scanBurst && len(b.retired) == 0 {

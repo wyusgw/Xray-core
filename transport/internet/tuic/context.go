@@ -43,8 +43,6 @@ func ServerSettingsFromContext(ctx context.Context) ServerSettings {
 	return settings
 }
 
-// ContextWithClient carries the outbound's TUIC client into the transport
-// dialer, which is where the QUIC connection actually gets established.
 func ContextWithClient(ctx context.Context, client *Client) context.Context {
 	return context.WithValue(ctx, clientContextKey{}, client)
 }
@@ -54,8 +52,6 @@ func ClientFromContext(ctx context.Context) *Client {
 	return client
 }
 
-// ContextWithUDP marks the request as a UDP relay so the dialer hands back a
-// TUIC packet session instead of a relay stream.
 func ContextWithUDP(ctx context.Context, udp bool) context.Context {
 	return context.WithValue(ctx, udpContextKey{}, udp)
 }

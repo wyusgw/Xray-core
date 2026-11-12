@@ -54,7 +54,6 @@ func (v *Validator) Add(user *protocol.MemoryUser) (err error) {
 	v.mu.Lock()
 	auth := user.Account.(*MemoryAccount).Auth
 	if user.Email != "" {
-		// Re-adding an email with a new auth replaces its old auth.
 		if old, ok := v.emails.Load(user.Email); ok && old.(string) != auth {
 			v.delAuth(old.(string), user.Email)
 		}
@@ -83,8 +82,7 @@ func (v *Validator) DelByEmail(email string) (err error) {
 	return
 }
 
-// delAuth removes auth if it still belongs to email: a later Add may have
-// given the same auth to another user. The caller holds v.mu.
+// delAuth removes auth only if it still belongs to email. The caller holds v.mu.
 func (v *Validator) delAuth(auth string, email string) {
 	value, ok := v.users.Load(auth)
 	if !ok || value.(*protocol.MemoryUser).Email != email {

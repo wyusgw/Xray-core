@@ -5,8 +5,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// MemoryAccount is the in-memory form of Account. mieru derives its session
-// keys from the user name as well as the password, so both are carried through.
 type MemoryAccount struct {
 	Username string
 	Password string
