@@ -244,6 +244,20 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			return
 		}
 
+		seq, err := strconv.ParseUint(seqStr, 10, 64)
+		if err != nil {
+			errors.LogInfoInner(context.Background(), err, "failed to upload (ParseUint)")
+			writer.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		err = currentSession.uploadQueue.Admit(request.Context(), seq)
+		if err != nil {
+			errors.LogInfoInner(context.Background(), err, "failed to upload (Admit)")
+			writer.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
 		dataPlacement := h.config.GetNormalizedUplinkDataPlacement()
 		var headerPayload []byte
 		if dataPlacement == PlacementAuto || dataPlacement == PlacementHeader {
@@ -320,13 +334,6 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		if len(payload) > scMaxEachPostBytes {
 			errors.LogInfo(context.Background(), "Too large upload. scMaxEachPostBytes is set to ", scMaxEachPostBytes, "but request size exceed it. Adjust scMaxEachPostBytes on the server to be at least as large as client.")
 			writer.WriteHeader(http.StatusRequestEntityTooLarge)
-			return
-		}
-
-		seq, err := strconv.ParseUint(seqStr, 10, 64)
-		if err != nil {
-			errors.LogInfoInner(context.Background(), err, "failed to upload (ParseUint)")
-			writer.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 

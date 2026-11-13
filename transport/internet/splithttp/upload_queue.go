@@ -5,7 +5,9 @@ package splithttp
 
 import (
 	"container/heap"
+	"context"
 	"io"
+	"sync"
 	"sync/atomic"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -25,6 +27,10 @@ type uploadQueue struct {
 	nextSeq       uint64
 	maxPackets    int
 	closed        *done.Instance
+
+	readMu   sync.Mutex
+	readSeq  uint64
+	readMore chan struct{}
 }
 
 func NewUploadQueue(maxPackets int) *uploadQueue {
@@ -34,7 +40,36 @@ func NewUploadQueue(maxPackets int) *uploadQueue {
 		nextSeq:       0,
 		closed:        done.New(),
 		maxPackets:    maxPackets,
+		readMore:      make(chan struct{}),
 	}
+}
+
+// Admit blocks until seq is within maxPackets of the next packet to be read, so a
+// slow reader leaves the rest of the upload unread on the client side.
+func (h *uploadQueue) Admit(ctx context.Context, seq uint64) error {
+	for {
+		h.readMu.Lock()
+		next, more := h.readSeq, h.readMore
+		h.readMu.Unlock()
+		if seq < next+uint64(h.maxPackets) {
+			return nil
+		}
+		select {
+		case <-more:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-h.closed.Wait():
+			return errors.New("packet queue closed")
+		}
+	}
+}
+
+func (h *uploadQueue) advance(next uint64) {
+	h.readMu.Lock()
+	h.readSeq = next
+	close(h.readMore)
+	h.readMore = make(chan struct{})
+	h.readMu.Unlock()
 }
 
 func (h *uploadQueue) Push(p Packet) error {
@@ -95,6 +130,7 @@ func (h *uploadQueue) Read(b []byte) (int, error) {
 				heap.Push(&h.heap, packet)
 			} else {
 				h.nextSeq = packet.Seq + 1
+				h.advance(h.nextSeq)
 			}
 
 			return n, nil
