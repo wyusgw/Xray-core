@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	gotls "crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -126,7 +127,9 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 
 	h.config.ApplyXPaddingToResponse(writer, config)
 
-	if request.Method == "OPTIONS" {
+	// A real CORS preflight always carries Access-Control-Request-Method. An OPTIONS request without it is an
+	// uplink request (uplinkHTTPMethod: "OPTIONS") and must go through the normal handling below.
+	if request.Method == "OPTIONS" && request.Header.Get("Access-Control-Request-Method") != "" {
 		writer.WriteHeader(http.StatusOK)
 		return
 	}
@@ -244,6 +247,20 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			return
 		}
 
+		seq, err := strconv.ParseUint(seqStr, 10, 64)
+		if err != nil {
+			errors.LogInfoInner(context.Background(), err, "failed to upload (ParseUint)")
+			writer.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		err = currentSession.uploadQueue.Admit(request.Context(), seq)
+		if err != nil {
+			errors.LogInfoInner(context.Background(), err, "failed to upload (Admit)")
+			writer.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
 		dataPlacement := h.config.GetNormalizedUplinkDataPlacement()
 		var headerPayload []byte
 		if dataPlacement == PlacementAuto || dataPlacement == PlacementHeader {
@@ -320,13 +337,6 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		if len(payload) > scMaxEachPostBytes {
 			errors.LogInfo(context.Background(), "Too large upload. scMaxEachPostBytes is set to ", scMaxEachPostBytes, "but request size exceed it. Adjust scMaxEachPostBytes on the server to be at least as large as client.")
 			writer.WriteHeader(http.StatusRequestEntityTooLarge)
-			return
-		}
-
-		seq, err := strconv.ParseUint(seqStr, 10, 64)
-		if err != nil {
-			errors.LogInfoInner(context.Background(), err, "failed to upload (ParseUint)")
-			writer.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
@@ -553,6 +563,14 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 
 		handler.localAddr = l.listener.Addr()
 
+		var http2Config *http.HTTP2Config
+		if len(l.config.H2Params) > 0 {
+			http2Config = new(http.HTTP2Config)
+			if err := json.Unmarshal(l.config.H2Params, http2Config); err != nil {
+				return nil, errors.New("failed to parse HTTP2Config").Base(err)
+			}
+		}
+
 		// server can handle both plaintext HTTP/1.1 and h2c
 		protocols := new(http.Protocols)
 		protocols.SetHTTP1(true)
@@ -562,6 +580,7 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			ReadHeaderTimeout: time.Second * 4,
 			MaxHeaderBytes:    l.config.GetNormalizedServerMaxHeaderBytes(),
 			Protocols:         protocols,
+			HTTP2:             http2Config,
 		}
 		go func() {
 			if err := l.server.Serve(l.listener); err != nil {
