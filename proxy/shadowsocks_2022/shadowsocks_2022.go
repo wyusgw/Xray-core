@@ -18,9 +18,7 @@ import (
 )
 
 func (s *ServerUDPSession) UpdateConn(conn stat.Connection) {
-	if s.currentConn.Load() == nil {
-		s.currentConn.Store(conn)
-	}
+	s.currentConn.Store(conn)
 	if timer := s.timer.Load(); timer != nil {
 		timer.Update()
 	}
@@ -57,18 +55,15 @@ func (s *ServerUDPSession) EnsureLink(
 	policyManager policy.Manager,
 	responseEncoder func(dest net.Destination, payload []byte) ([]byte, error),
 ) (*transport.Link, error) {
-	s.UpdateConn(conn)
-
-	if link := s.link.Load(); link != nil {
-		return link, nil
-	}
-
 	s.Lock()
 	defer s.Unlock()
 
 	if link := s.link.Load(); link != nil {
+		s.UpdateConn(conn)
 		return link, nil
 	}
+
+	s.currentConn.Store(conn)
 
 	sessCtx, cancel := context.WithCancel(ctx)
 	inbound := session.InboundFromContext(sessCtx)
